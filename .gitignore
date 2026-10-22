@@ -7,3 +7,8 @@ venv/
 progress.json
 interactions.jsonl
 eval_cases.jsonl
+.claude/
+.vercel/
+node_modules/
+.env.local
+.env*.local

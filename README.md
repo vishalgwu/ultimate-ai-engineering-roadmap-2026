@@ -1,5 +1,9 @@
 # The Ultimate AI Engineering Roadmap (2026)
 
+### 🎬 [Binge the series: live site](https://ai-engineering-roadmap-2026-omega.vercel.app)
+
+A streaming-style way to read this guide: pick a profile, browse chapters as "titles", read episodes in the browser with a resume-where-you-left-off reader, keep a My List, and search all 187 concept sections. Built as a zero-dependency static site in [`site/`](site/) and deployed on Vercel.
+
 A 19-chapter, code-first guide to building production AI systems. Every concept section has four parts:
 **Conceptual Deep Dive**, **Cross-Connection Scenarios**, **Production Anti-Patterns**, **Minimal Working Code**.
 
@@ -13,6 +17,8 @@ A 19-chapter, code-first guide to building production AI systems. Every concept 
 | `scripts/audit.py` | Agent 21 structural audit (sections, code parses, required concepts) |
 | `scripts/merge_extensions.py` | Appends `extensions/*.md` expansion sections to their chapters (idempotent) |
 | `extensions/` | Expansion sections (`NN.md`, `NNb.md`) already merged into the chapters |
+| `site/` | Netflix-style static web app (HTML/CSS/JS) deployed to Vercel; chapters and PDFs are copied in |
+| `scripts/build_site_data.py` | Regenerates `site/data.js` and copies chapters/PDFs into `site/` |
 | `CROSSCHECK.md` | What was audited, what was added, and the known remaining gaps |
 | `scripts/required_concepts.json` | Per-chapter concept checklist the audit enforces |
 
