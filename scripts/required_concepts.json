@@ -1,0 +1,21 @@
+{
+  "01_about_this_guide": ["prerequisites", "reading strategy", "repository layout"],
+  "02_ai_engineering_fundamentals": ["probabilistic", "non-determinism", "temperature", "context window", "stack"],
+  "03_python_for_ai_engineers": ["asyncio", "generator", "type hint", "semaphore", "memory", "multiprocessing", "numpy"],
+  "04_apis_http_reliability": ["exponential backoff", "jitter", "circuit breaker", "idempotency", "rate limit", "SSE", "WebSocket"],
+  "05_ml_deep_learning_foundations": ["backpropagation", "attention", "BPE", "WordPiece", "tiktoken", "transformer", "GPU", "KV cache"],
+  "06_prompt_engineering": ["zero-shot", "few-shot", "chain-of-thought", "tree-of-thoughts", "ReAct", "prompt injection", "system prompt"],
+  "07_structured_output_and_tool_use": ["JSON mode", "function calling", "pydantic", "Outlines", "XGrammar", "Guidance"],
+  "08_embeddings_and_vector_search": ["cosine", "HNSW", "Qdrant", "Milvus", "Pinecone", "pgvector", "hybrid", "BM25", "Matryoshka"],
+  "09_retrieval_augmented_generation": ["chunking", "HyDE", "parent-document", "GraphRAG", "Reciprocal Rank Fusion", "rerank", "hallucination"],
+  "10_evaluation": ["RAGAS", "TruLens", "LLM-as-a-judge", "golden dataset", "A/B", "faithfulness", "latency"],
+  "11_agents": ["LangGraph", "AutoGen", "episodic", "semantic", "working memory", "planning", "multi-agent"],
+  "12_fine_tuning_and_open_models": ["LoRA", "QLoRA", "DPO", "ORPO", "unsloth", "GPTQ", "AWQ", "GGUF", "SFT"],
+  "13_serving_and_deployment": ["vLLM", "continuous batching", "Triton", "Ollama", "TGI", "Kubernetes", "PagedAttention"],
+  "14_observability_safety_security": ["OpenTelemetry", "Phoenix", "Langfuse", "NeMo Guardrails", "Llama Guard", "PII", "jailbreak"],
+  "15_modern_workflow_and_testing": ["CI/CD", "GitOps", "evaluation gate", "regression", "reproducib"],
+  "16_communication_and_career": ["stakeholder", "system design", "business metric", "career"],
+  "17_project_roadmap": ["architecture", "production", "capstone"],
+  "18_learning_roadmap": ["milestone", "lab", "checkpoint"],
+  "19_cheat_sheet": ["decision matrix", "formula", "comparison"]
+}
