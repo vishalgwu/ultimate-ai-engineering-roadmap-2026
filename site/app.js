@@ -2,22 +2,31 @@
 (function () {
   "use strict";
   const D = window.ROADMAP;
+  const C = Object.assign({
+    brand: "AI ENGINEERING", year: "2026", storage: "aie26",
+    repo: "https://github.com/vishalgwu/ultimate-ai-engineering-roadmap-2026",
+    kicker: "ROADMAP SERIES", gateTitle: "Who's building?", gateSub: "Pick a profile and the catalogue reorders itself for your role.",
+    top10Title: "Top 10 Chapters in AI Engineering Today", conceptsTitle: "Trending Concepts (Changes Daily)",
+    newChapters: [12, 14, 17], newLabel: "RECENTLY EXPANDED", posterTag: "AI",
+    episodeBlurb: "Every episode follows the same arc: Conceptual Deep Dive, Cross-Connection Scenarios, Production Anti-Patterns, and Minimal Working Code.",
+    episodeSub: "Concept deep dive, scenarios, anti-patterns and code", search: "Titles, concepts, tools", title: "AI Engineering Roadmap 2026",
+  }, D.config || {});
   const $ = (s, el = document) => el.querySelector(s);
   const $$ = (s, el = document) => Array.from(el.querySelectorAll(s));
   const byNum = Object.fromEntries(D.chapters.map((c) => [c.num, c]));
-  const GH = "https://github.com/vishalgwu/ultimate-ai-engineering-roadmap-2026";
+  const GH = C.repo;
 
   /* ---------- storage (never throw) ---------- */
   const store = {
-    get(k, d) { try { const v = localStorage.getItem("aie26:" + k); return v ? JSON.parse(v) : d; } catch (e) { return d; } },
-    set(k, v) { try { localStorage.setItem("aie26:" + k, JSON.stringify(v)); } catch (e) { /* private mode */ } },
+    get(k, d) { try { const v = localStorage.getItem(C.storage + ":" + k); return v ? JSON.parse(v) : d; } catch (e) { return d; } },
+    set(k, v) { try { localStorage.setItem(C.storage + ":" + k, JSON.stringify(v)); } catch (e) { /* private mode */ } },
   };
   let profile = store.get("profile", null);
   let mylist = new Set(store.get("mylist", []));
   let progress = store.get("progress", {});      // {num: {pct, top}}
   let seen = store.get("seen", {});              // {"9.9": true}
 
-  const PROFILES = [
+  const PROFILES = (D.profiles && D.profiles.length) ? D.profiles : [
     { id: "app", name: "Application", role: "Application Engineer", initial: "A", color: "#E50914", rec: [6, 7, 9, 10, 14, 17] },
     { id: "platform", name: "Platform", role: "ML Platform Engineer", initial: "P", color: "#B20710", rec: [4, 5, 12, 13, 15, 14] },
     { id: "safety", name: "Safety & Evals", role: "Evaluation & Safety", initial: "S", color: "#831010", rec: [10, 14, 15, 6, 11] },
@@ -85,9 +94,9 @@
   }
   function chapterCard(ch, opts = {}) {
     const p = progress[ch.num]; const pct = p ? Math.min(100, Math.round(p.pct)) : 0;
-    const isNew = [12, 14, 17].includes(ch.num) && !opts.noTag;
+    const isNew = (C.newChapters || []).includes(ch.num) && !opts.noTag;
     return `<div class="card" tabindex="0" data-ch="${ch.num}" role="button" aria-label="${esc(ch.title)}">
-      <div class="poster">${poster(ch)}<span class="tag">${isNew ? '<span class="tag new" style="position:static">RECENTLY EXPANDED</span>' : "AI"}</span>
+      <div class="poster">${poster(ch)}<span class="tag">${isNew ? '<span class="tag new" style="position:static">${esc(C.newLabel)}</span>' : esc(C.posterTag)}</span>
       ${pct > 1 ? `<div class="prog"><span style="width:${pct}%"></span></div>` : ""}</div>${cardInfo(ch)}</div>`;
   }
   function topCard(ch, rank) {
@@ -113,11 +122,11 @@
     const cont = Object.keys(progress).map(Number).filter((n) => progress[n].pct > 1 && progress[n].pct < 98 && byNum[n]).sort((a, b) => (progress[b].t || 0) - (progress[a].t || 0));
     if (cont.length) out.push(rowEl("continue", "Continue Reading", cont.map((n) => chapterCard(byNum[n], { noTag: 1 })).join("")));
     if (profile && profile.rec) out.push(rowEl("picks", `Top Picks for ${profile.role}`, profile.rec.map((n) => chapterCard(byNum[n], { noTag: 1 })).join("")));
-    out.push(rowEl("top10", "Top 10 Chapters in AI Engineering Today", D.top10.map((n, i) => topCard(byNum[n], i + 1)).join(""), "top10"));
+    out.push(rowEl("top10", C.top10Title, D.top10.map((n, i) => topCard(byNum[n], i + 1)).join(""), "top10"));
     D.rows.forEach((r) => out.push(rowEl(r.id, r.title, r.chapters.map((n) => chapterCard(byNum[n])).join(""))));
     const day = Math.floor(Date.now() / 864e5); const rr = rng(day);
     const picks = [...D.concepts].sort(() => rr() - 0.5).slice(0, 16);
-    out.push(rowEl("concepts", "Trending Concepts (Changes Daily)", picks.map(conceptCard).join("")));
+    out.push(rowEl("concepts", C.conceptsTitle, picks.map(conceptCard).join("")));
     out.push(rowEl("mylist", "My List", mylist.size ? [...mylist].map((n) => chapterCard(byNum[n], { noTag: 1 })).join("") : '<div class="empty-row">Add chapters with the + button and they will appear here.</div>'));
     $("#rows").innerHTML = out.join("");
     bindArrows();
@@ -131,14 +140,14 @@
   }
 
   /* ---------- hero ---------- */
-  const FEATURED = [9, 11, 13, 10, 12, 14];
+  const FEATURED = (D.featured && D.featured.length) ? D.featured : [9, 11, 13, 10, 12, 14];
   let heroIdx = 0, heroTimer = null;
   function setHero(i) {
     heroIdx = i; const ch = byNum[FEATURED[i]];
     const b = $(".hero-body"); b.style.animation = "none"; void b.offsetWidth; b.style.animation = "";
     $("#hero-title").textContent = ch.title;
     const art = $("#hero-art"); art.style.animation = "none"; void art.offsetWidth; art.style.animation = ""; art.innerHTML = poster(ch);
-    $("#hero-meta").innerHTML = `<span class="match">${match(ch)}% Match</span><span>2026</span><span class="chip">${esc(ch.level)}</span><span>${ch.sections.length} episodes</span><span>${ch.minutes} min read</span>`;
+    $("#hero-meta").innerHTML = `<span class="match">${match(ch)}% Match</span><span>${esc(C.year)}</span><span class="chip">${esc(ch.level)}</span><span>${ch.sections.length} episodes</span><span>${ch.minutes} min read</span>`;
     $("#hero-desc").textContent = ch.tagline;
     $("#hero-play").onclick = () => openReader(ch.num);
     $("#hero-info").onclick = () => openModal(ch.num);
@@ -175,7 +184,7 @@
     const idx = D.chapters.findIndex((c) => c.num === num);
     const eps = ch.sections.map((s, i) => {
       const m = Math.max(1, Math.round((s.words || 200) / 220));
-      return `<div class="ep ${seen[s.num] ? "seen" : ""}" data-ch="${num}" data-sec="${s.num}" role="button" tabindex="0"><div class="n">${seen[s.num] ? "&#10003;" : i + 1}</div><div><div class="t">${esc(s.num + "  " + s.title)}</div><div class="d">Concept deep dive, scenarios, anti-patterns and code</div></div><div class="min">${m}m</div></div>`;
+      return `<div class="ep ${seen[num + ":" + s.num] ? "seen" : ""}" data-ch="${num}" data-sec="${s.num}" role="button" tabindex="0"><div class="n">${seen[num + ":" + s.num] ? "&#10003;" : i + 1}</div><div><div class="t">${esc(s.num + "  " + s.title)}</div><div class="d">${esc(C.episodeSub)}</div></div><div class="min">${m}m</div></div>`;
     }).join("");
     const more = D.chapters.filter((c) => c.num !== num && c.genres.some((g) => ch.genres.includes(g)) || Math.abs(c.num - num) === 1).filter((c) => c.num !== num).slice(0, 6);
     const on = mylist.has(num);
@@ -186,8 +195,8 @@
           <div class="hero-actions"><button class="btn btn-play" data-act="play" data-ch="${num}">${ico.play.replace("<svg", '<svg width="22" height="22"')}${progress[num] && progress[num].pct > 1 ? "Resume" : "Start reading"}</button>
           <button class="rbtn ${on ? "on" : ""}" data-act="list" data-ch="${num}" aria-label="Toggle My List" style="width:40px;height:40px">${on ? ico.check : ico.plus}</button></div></div></div>
       <div class="m-body">
-        <p class="meta-line"><span class="match" style="color:var(--green);font-weight:700">${match(ch)}% Match</span><span>2026</span><span class="chip">${esc(ch.level)}</span><span>${ch.sections.length} episodes</span><span>${ch.words.toLocaleString()} words</span><span class="chip">${ch.codeBlocks} code samples</span></p>
-        <div class="m-desc"><p>${esc(ch.tagline)}</p><p style="margin-top:.8rem;color:var(--muted)">Every episode follows the same arc: Conceptual Deep Dive, Cross-Connection Scenarios, Production Anti-Patterns, and Minimal Working Code.</p>
+        <p class="meta-line"><span class="match" style="color:var(--green);font-weight:700">${match(ch)}% Match</span><span>${esc(C.year)}</span><span class="chip">${esc(ch.level)}</span><span>${ch.sections.length} episodes</span><span>${ch.words.toLocaleString()} words</span><span class="chip">${ch.codeBlocks} code samples</span></p>
+        <div class="m-desc"><p>${esc(ch.tagline)}</p><p style="margin-top:.8rem;color:var(--muted)">${esc(C.episodeBlurb)}</p>
           <p style="margin-top:1rem"><a class="pill" href="${ch.pdf}" download>Download PDF</a> <a class="pill" href="${GH}/blob/main/chapters/${ch.slug}.md" target="_blank" rel="noopener">View source</a></p></div>
         <div class="m-side"><div><b>Starring:</b> <span class="link">${ch.cast.map(esc).join(", ")}</span></div><div><b>Genres:</b> <span class="link">${ch.genres.map(esc).join(", ")}</span></div><div><b>Season:</b> <span class="link">Episode ${idx + 1} of ${D.chapters.length}</span></div></div>
         <div class="m-eps"><h3>Episodes</h3>${eps}</div>
@@ -235,7 +244,7 @@
     try { text = await loadMd(ch); } catch (e) { art.innerHTML = `<div class="md"><h1>Could not load this chapter</h1><p>${esc(e.message)}. Read it on <a href="${GH}/blob/main/chapters/${ch.slug}.md">GitHub</a>.</p></div>`; return; }
     if (!cur || cur.num !== num) return;
     const wrap = document.createElement("div"); wrap.className = "md"; wrap.innerHTML = marked.parse(text, { gfm: true, breaks: false });
-    $$("h2", wrap).forEach((h) => { const m = h.textContent.match(/^(\d+\.\d+)\s+(.*)$/); if (m) { h.id = "s-" + m[1]; h.innerHTML = `<span class="secn">${m[1]}</span>${esc(m[2])}`; } });
+    $$("h2", wrap).forEach((h) => { const m = h.textContent.match(/^(\d+)(?:\.(\d+))?\.?\s+(.*)$/); if (m) { const sn = m[2] ? `${m[1]}.${m[2]}` : `${num}.${m[1]}`; h.id = "s-" + sn; h.innerHTML = `<span class="secn">${sn}</span>${esc(m[3])}`; } });
     $$("pre", wrap).forEach((pre) => {
       const code = $("code", pre); const raw = code.textContent;
       if (/language-(python|py)/.test(code.className)) code.innerHTML = highlightPy(raw);
@@ -261,7 +270,7 @@
     const topLine = art.getBoundingClientRect().top + 90;
     hs.forEach((h) => { if (h.getBoundingClientRect().top <= topLine) active = h.id.slice(2); });
     $$(".toc-i").forEach((b) => b.classList.toggle("on", active ? b.dataset.s === active : !!b.dataset.top));
-    if (active) { const idx = ch.sections.findIndex((s) => s.num === active); for (let k = 0; k < idx; k++) seen[ch.sections[k].num] = true; }
+    if (active) { const idx = ch.sections.findIndex((s) => s.num === active); for (let k = 0; k < idx; k++) seen[ch.num + ":" + ch.sections[k].num] = true; }
     clearTimeout(onReaderScroll.t); onReaderScroll.t = setTimeout(() => { progress[cur.num] = { pct: Math.max(pct, (progress[cur.num] || {}).pct || 0) > 97 ? 100 : pct, top: art.scrollTop, t: Date.now() }; store.set("progress", progress); store.set("seen", seen); }, 350);
   }
   function closeReader(fromHash) {
@@ -295,8 +304,8 @@
     profile = PROFILES.find((p) => p.id === id) || null; store.set("profile", profile);
     $("#gate").classList.add("hidden"); document.body.style.overflow = "";
     $("#avatar-initial").textContent = profile ? profile.initial : "VF"; $(".avatar").style.background = profile ? profile.color : "";
-    if (!sessionStorage.getItem("aie26:splash") && !matchMedia("(prefers-reduced-motion: reduce)").matches) {
-      try { sessionStorage.setItem("aie26:splash", "1"); } catch (e) { /* ignore */ }
+    if (!sessionStorage.getItem(C.storage + ":splash") && !matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      try { sessionStorage.setItem(C.storage + ":splash", "1"); } catch (e) { /* ignore */ }
       const s = $("#splash"); s.classList.remove("hidden"); setTimeout(() => s.classList.add("hidden"), 2700);
     }
     renderRows();
@@ -359,6 +368,18 @@
     const t = D.totals;
     $("#stats").innerHTML = `<span><b>${t.chapters}</b>chapters</span><span><b>${t.sections}</b>concept episodes</span><span><b>${t.code}</b>code samples</span><span><b>${(t.words / 1000).toFixed(0)}k</b>words</span><span><b>MIT</b>open source</span>`;
   }
+  function applyBrand() {
+    document.title = `${C.title} - Binge the Series`;
+    $$(".wordmark").forEach((w) => (w.textContent = C.brand));
+    const sw = $(".splash-word"); if (sw) sw.textContent = C.brand;
+    const sy = $(".splash-year"); if (sy) sy.textContent = C.year;
+    const kk = $(".hero-kicker"); if (kk) kk.innerHTML = `<span class="series-n">A</span> ${esc(C.kicker)}`;
+    const gh = $(".gate h1"); if (gh) gh.textContent = C.gateTitle;
+    const gs = $(".gate-sub"); if (gs) gs.textContent = C.gateSub;
+    const si = $("#search-input"); if (si) si.placeholder = C.search;
+    $$('a[href*="ultimate-ai-engineering-roadmap-2026"]').forEach((a) => (a.href = a.href.replace("https://github.com/vishalgwu/ultimate-ai-engineering-roadmap-2026", GH)));
+  }
+  applyBrand();
   stats(); setHero(0); startHero(); heroCanvas();
   if (profile) { $("#avatar-initial").textContent = profile.initial; $(".avatar").style.background = profile.color; renderRows(); } else { renderRows(); if (!/^#\/read\//.test(location.hash)) showGate(); }
   route();
