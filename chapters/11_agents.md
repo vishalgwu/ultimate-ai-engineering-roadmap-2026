@@ -323,3 +323,171 @@ def recover(step_fn, replan_fn, escalate_fn, transient=(TimeoutError,), max_retr
             break
     return escalate_fn()
 ```
+
+## 11.9 Coding, Browser and Computer-Use Agents
+
+### Conceptual Deep Dive
+**Coding agents** read a repository, plan edits, modify files, run tests and iterate. Effective designs give the agent: a repo map or search tools (grep, symbol lookup) rather than whole-repo dumps; precise edit tools (apply a patch, replace a unique string) instead of rewriting files; a test runner with trimmed output; and a sandbox with no production credentials. Verification via tests and linters is the strongest feedback loop. **Browser agents** observe pages through the accessibility tree or DOM text (cheaper and more reliable than raw screenshots), act with click/type/navigate primitives, and need guards against prompt injection from page content and irreversible actions (purchases, deletions). **Computer-use agents** operate GUIs via screenshots and coordinates; slower and less reliable, so prefer APIs, then structured DOM access, then pixels. Common controls: step budgets, per-domain allow-lists, human approval for sensitive actions, session recording for audit. Edge cases: CAPTCHAs and bot detection, dynamic pages and timing, stale element references, huge diffs, flaky tests mistaken for regressions, and agents "fixing" tests by weakening them.
+
+### Cross-Connection Scenarios
+Tool safety (7.7), sandboxing (11.6), injection (6.5, 14.2), trajectory evaluation (11.6, 17.4), long context management (11.7).
+
+### Production Anti-Patterns
+- Letting the agent edit the tests it is judged by.
+- Giving a browser agent logged-in sessions with payment access.
+- Feeding full HTML pages (tens of thousands of tokens) as observations.
+
+### Minimal Working Code
+```python
+import re
+from pathlib import Path
+
+def apply_unique_replace(path: str, old: str, new: str) -> str:
+    """Edit tool: refuse ambiguous edits so the agent must supply enough context."""
+    p = Path(path)
+    text = p.read_text(encoding="utf-8")
+    n = text.count(old)
+    if n == 0:
+        return "ERROR: old string not found"
+    if n > 1:
+        return f"ERROR: old string appears {n} times; include more surrounding context"
+    p.write_text(text.replace(old, new), encoding="utf-8")
+    return "OK"
+
+def trim_test_output(out: str, max_lines: int = 40) -> str:
+    lines = out.splitlines()
+    fails = [l for l in lines if re.search(r"(FAILED|ERROR|AssertionError|Traceback)", l)]
+    return "\n".join((fails + lines[-10:])[:max_lines])
+```
+
+```python
+def protected_paths_check(changed_files: list[str], protected: list[str]) -> list[str]:
+    """Reject runs that modify tests/CI config the agent is evaluated on."""
+    import fnmatch
+    return [f for f in changed_files if any(fnmatch.fnmatch(f, pat) for pat in protected)]
+
+print(protected_paths_check(["src/app.py", "tests/test_app.py"], ["tests/*", ".github/*"]))
+```
+
+## 11.10 Agent Interoperability: MCP, A2A and Tool Registries
+
+### Conceptual Deep Dive
+Two protocol layers are emerging. **Tool/context protocols** (MCP) connect an agent to tools and data. **Agent-to-agent protocols** (A2A and similar) let independently built agents discover each other through **agent cards** (capabilities, endpoints, auth), delegate **tasks** with lifecycle states (submitted, working, input-required, completed, failed), and exchange artifacts. Design questions: identity and authorisation across organisational boundaries, task timeouts and cancellation, streaming progress, schema negotiation, and trust (an external agent's output is untrusted data). A **tool registry** with metadata (owner, risk tier, rate limits, schema version, cost) enables governance, discovery and per-tenant enablement; retrieve tools dynamically by embedding descriptions when the catalogue is large. Edge cases: capability claims that overstate reality, loops where agents delegate to each other indefinitely, and version skew between agent cards and behaviour.
+
+### Cross-Connection Scenarios
+MCP (7.8), multi-agent patterns (11.5), tool retrieval (7.5), governance (14.7).
+
+### Production Anti-Patterns
+- Trusting a remote agent's claimed capabilities without contract tests.
+- No delegation depth limit.
+- Passing the user's full context to every delegate.
+
+### Minimal Working Code
+```python
+from dataclasses import dataclass, field
+
+@dataclass
+class AgentCard:
+    name: str
+    url: str
+    skills: list[str]
+    auth: str = "bearer"
+    version: str = "1.0"
+
+@dataclass
+class Task:
+    id: str
+    skill: str
+    payload: dict
+    depth: int = 0
+    state: str = "submitted"
+    history: list = field(default_factory=list)
+
+def delegate(task: Task, registry: dict[str, AgentCard], call, max_depth: int = 3):
+    if task.depth >= max_depth:
+        task.state = "failed"
+        task.history.append("delegation depth exceeded")
+        return task
+    card = next((c for c in registry.values() if task.skill in c.skills), None)
+    if card is None:
+        task.state = "failed"
+        return task
+    task.state = "working"
+    result = call(card, Task(task.id, task.skill, task.payload, task.depth + 1))
+    task.state = result.state
+    return task
+```
+
+```python
+import numpy as np
+
+def select_tools(query_vec: np.ndarray, tool_vecs: dict[str, np.ndarray], k: int = 5, risk_ok=lambda n: True):
+    """Retrieve the top-k tools by description similarity, then filter by policy."""
+    scored = sorted(tool_vecs, key=lambda n: -float(query_vec @ tool_vecs[n]))
+    return [n for n in scored if risk_ok(n)][:k]
+
+rng = np.random.default_rng(0)
+tools = {"search": rng.standard_normal(8), "send_email": rng.standard_normal(8), "calc": rng.standard_normal(8)}
+print(select_tools(tools["calc"], tools, k=2, risk_ok=lambda n: n != "send_email"))
+```
+
+## 11.11 Cost, Latency and Reliability Engineering for Agents
+
+### Conceptual Deep Dive
+Agent cost grows with steps x context size. Levers: **route steps to the cheapest adequate model** (planner on a strong model, executor/summariser on small ones), **cache** tool results and LLM calls (idempotent reads), **parallelise** independent tool calls, **trim context** (7.7/11.7), **early-exit** when a verifier passes, cap steps and tokens, and prefer deterministic code for steps that need no reasoning. Latency: stream intermediate progress, run speculative branches, precompute likely retrievals. Reliability: per-step timeouts, retry transient errors, circuit breakers on flaky tools, validation of every tool result, and fallbacks to simpler workflows. Measure **cost per solved task**, **steps per task**, **tool error rate**, and **p95 end-to-end time**. Edge cases: runaway loops, cost spikes from a single long document, rate-limit cascades when many agents share a key, and non-idempotent tools being retried.
+
+### Cross-Connection Scenarios
+Token economics (2.4), gateways (13.6), reliability patterns (4.3–4.5), cost governance (15.7), loop detection (11.7).
+
+### Production Anti-Patterns
+- Using the strongest model for every step.
+- No per-task spend ceiling.
+- Retrying a tool call that has side effects without an idempotency key.
+
+### Minimal Working Code
+```python
+import time
+
+class Budget:
+    def __init__(self, max_usd: float, max_steps: int, max_seconds: float):
+        self.max_usd, self.max_steps, self.max_seconds = max_usd, max_steps, max_seconds
+        self.usd, self.steps, self.t0 = 0.0, 0, time.time()
+
+    def charge(self, usd: float):
+        self.usd += usd
+        self.steps += 1
+
+    def exhausted(self) -> str | None:
+        if self.usd > self.max_usd:
+            return "cost"
+        if self.steps >= self.max_steps:
+            return "steps"
+        if time.time() - self.t0 > self.max_seconds:
+            return "time"
+        return None
+
+b = Budget(0.50, 20, 120)
+b.charge(0.6)
+print(b.exhausted())
+```
+
+```python
+import functools
+import json
+
+def memoize_tool(fn):
+    cache = {}
+    @functools.wraps(fn)
+    def wrapper(**kwargs):
+        key = json.dumps(kwargs, sort_keys=True, default=str)
+        if key not in cache:
+            cache[key] = fn(**kwargs)
+        return cache[key]
+    return wrapper
+
+@memoize_tool
+def lookup(customer_id: str) -> dict:
+    return {"id": customer_id, "tier": "gold"}
+
+print(lookup(customer_id="c1") is lookup(customer_id="c1"))
+```

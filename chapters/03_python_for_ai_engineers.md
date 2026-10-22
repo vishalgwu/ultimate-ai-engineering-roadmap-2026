@@ -315,3 +315,96 @@ for s in ["Score: 4", "4/5", "no digits", "9 then 3"]:
     r = parse_score(s)
     assert r is None or 1 <= r <= 5
 ```
+
+## 3.9 Data Engineering with Polars, DuckDB and Parquet
+
+### Conceptual Deep Dive
+Most AI pipelines are data pipelines. **Parquet** is columnar, compressed and typed, so it reads only needed columns and is far smaller than CSV. **Polars** gives a lazy, multi-threaded DataFrame API that optimises the query plan (predicate and projection pushdown) and streams larger-than-memory data. **DuckDB** runs SQL directly over Parquet/CSV files with no server, ideal for ad-hoc analysis of logs and eval results. Patterns: partition datasets by date, store embeddings as list columns or separate files, keep raw immutable data separate from derived tables, and record schema versions. Edge cases: schema drift across files, nulls vs empty strings, time zones, very wide text columns blowing memory, and nondeterministic row order after parallel operations (sort explicitly before splitting).
+
+### Cross-Connection Scenarios
+Eval result analysis (10), fine-tuning dataset preparation (12.2), log analysis (14.1), reproducible splits (15.4).
+
+### Production Anti-Patterns
+- Loading a full multi-GB CSV into pandas to compute one aggregate.
+- Writing intermediate results as pickles that break across versions.
+- Random splits without a fixed seed or stable ordering.
+
+### Minimal Working Code
+```python
+# pip install polars duckdb
+import polars as pl
+
+def eval_summary(path: str) -> pl.DataFrame:
+    return (pl.scan_parquet(path)
+              .filter(pl.col("split") == "test")
+              .group_by("slice")
+              .agg(pl.len().alias("n"), pl.col("correct").mean().alias("acc"),
+                   pl.col("latency_ms").quantile(0.95).alias("p95_ms"))
+              .sort("acc")
+              .collect())
+
+df = pl.DataFrame({"split": ["test"] * 4, "slice": ["a", "a", "b", "b"],
+                   "correct": [1, 0, 1, 1], "latency_ms": [100, 300, 120, 140]})
+df.write_parquet("evals.parquet")
+print(eval_summary("evals.parquet"))
+```
+
+```python
+import duckdb
+
+def worst_slices(path: str, min_n: int = 2):
+    return duckdb.sql(f"""
+        SELECT slice, count(*) AS n, avg(correct) AS acc
+        FROM read_parquet('{path}')
+        GROUP BY slice HAVING count(*) >= {min_n}
+        ORDER BY acc ASC LIMIT 5
+    """).fetchall()
+
+print(worst_slices("evals.parquet"))
+```
+
+## 3.10 Profiling and Performance Optimisation
+
+### Conceptual Deep Dive
+Measure first. Tools: `time.perf_counter` for coarse timing, `cProfile`/`snakeviz` for CPU hot spots, `py-spy` for sampling a running process without code changes, `line_profiler` for hot lines, `tracemalloc`/`memray` for memory, and `asyncio` debug mode to find blocking calls (slow callback warnings). Typical wins in AI pipelines: batch API calls, reuse HTTP connections, cache embeddings by content hash, vectorise loops with NumPy, avoid repeated JSON (de)serialisation of large payloads, use `orjson`, and move CPU-heavy tokenisation or parsing to process pools. Edge cases: micro-benchmarks distorted by caching or warm-up, GPU timings requiring explicit synchronisation (`torch.cuda.synchronize()`), and optimisation of code that is 2% of wall time.
+
+### Cross-Connection Scenarios
+Async patterns (3.1, 3.7), memory (3.4), embedding caching (8.6), benchmarking services (10.6).
+
+### Production Anti-Patterns
+- Optimising before profiling.
+- Timing GPU code without synchronisation.
+- Premature complexity (custom C extensions) when batching would suffice.
+
+### Minimal Working Code
+```python
+import time
+from contextlib import contextmanager
+
+@contextmanager
+def timer(label: str, sink: dict):
+    t0 = time.perf_counter()
+    try:
+        yield
+    finally:
+        sink[label] = sink.get(label, 0.0) + time.perf_counter() - t0
+
+stats: dict[str, float] = {}
+with timer("parse", stats):
+    sum(i * i for i in range(200_000))
+with timer("embed", stats):
+    time.sleep(0.01)
+print({k: round(v, 4) for k, v in stats.items()})
+```
+
+```python
+import asyncio
+import time
+
+async def find_blocking_calls():
+    loop = asyncio.get_running_loop()
+    loop.slow_callback_duration = 0.05          # log callbacks that block longer than 50 ms
+    time.sleep(0.2)                              # deliberately blocking: shows up in debug logs
+
+# run with:  asyncio.run(find_blocking_calls(), debug=True)
+```

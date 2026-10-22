@@ -194,3 +194,104 @@ def model_card_table(slices: dict[str, dict]) -> str:
 print(model_card_table({"English": {"n": 400, "p": .91, "lo": .88, "hi": .93},
                         "Spanish": {"n": 60, "p": .83, "lo": .72, "hi": .91}}))
 ```
+
+## 16.7 Interview Preparation: Technical Question Bank
+
+### Conceptual Deep Dive
+Expect five interview families. **(1) Fundamentals**: explain attention and why scaled; what a KV cache stores; BPE vs WordPiece; temperature vs top-p; why decode is memory-bound; LoRA rank/alpha; DPO vs RLHF. **(2) RAG and search**: chunk size trade-offs; HNSW vs IVF-PQ; why hybrid; RRF formula; diagnosing low recall; faithfulness vs relevance; handling ACLs. **(3) Systems**: design retries/backoff/jitter; idempotency; circuit breakers; streaming transports; autoscaling GPUs on queue depth; capacity math. **(4) Evaluation and safety**: build a golden set; calibrate a judge; A/B sample size; red-teaming; indirect injection mitigations; PII. **(5) Coding**: implement top-k cosine, a token bucket, BM25, RRF, a retry decorator, chunking with overlap, a simple agent loop with budgets. Answer structure: restate the problem, give the simplest correct approach, state trade-offs and failure modes, then say how you would measure it. Edge cases: questions about very recent models/tools (say what you verify and how), and ambiguous prompts (ask clarifying questions first).
+
+### Cross-Connection Scenarios
+System design framework (16.3), cheat sheet (19), anti-pattern lists in every chapter.
+
+### Production Anti-Patterns
+- Reciting buzzwords without trade-offs.
+- Jumping to code before clarifying requirements.
+- Claiming a technique "always" works.
+
+### Minimal Working Code
+```python
+import heapq
+
+def top_k_cosine(query, vectors, k):
+    """Interview staple: O(N log k) with a heap; vectors pre-normalised."""
+    heap = []
+    for i, v in enumerate(vectors):
+        s = sum(a * b for a, b in zip(query, v))
+        if len(heap) < k:
+            heapq.heappush(heap, (s, i))
+        elif s > heap[0][0]:
+            heapq.heapreplace(heap, (s, i))
+    return sorted(heap, reverse=True)
+
+print(top_k_cosine([1, 0], [[1, 0], [0.7, 0.7], [0, 1]], 2))
+```
+
+```python
+import functools
+import random
+import time
+
+def retry(max_attempts=4, base=0.2, cap=5.0, retry_on=(TimeoutError, ConnectionError)):
+    def deco(fn):
+        @functools.wraps(fn)
+        def wrapper(*a, **kw):
+            for attempt in range(max_attempts):
+                try:
+                    return fn(*a, **kw)
+                except retry_on:
+                    if attempt == max_attempts - 1:
+                        raise
+                    time.sleep(random.uniform(0, min(cap, base * 2 ** attempt)))
+        return wrapper
+    return deco
+
+calls = {"n": 0}
+
+@retry()
+def flaky():
+    calls["n"] += 1
+    if calls["n"] < 3:
+        raise TimeoutError
+    return "ok"
+
+print(flaky(), calls["n"])
+```
+
+## 16.8 Behavioural Interviews, Leadership and On-Call Practice
+
+### Conceptual Deep Dive
+Prepare 6–8 stories in **STAR** form (Situation, Task, Action, Result) with numbers: a production incident you handled, a time you changed your mind from data, a conflict with a stakeholder, a project cut for failing kill criteria, a mentoring moment, a cost or latency win, and a failure you own. Leadership at senior levels means setting direction under uncertainty, writing decisions down, unblocking others, and making trade-offs explicit. **On-call for AI systems** adds behaviours to classical SRE: dashboards for quality (not just uptime), a runbook for "model quality regression" (compare versions, check provider status, inspect recent prompt/config changes, check retrieval index freshness), a kill switch, a rollback procedure, and communication templates. Blameless postmortems feed regression tests. Edge cases: incidents caused by provider silent changes, partial degradations (quality drops but no errors), and cost-incidents (a loop burning budget at 3 a.m.).
+
+### Cross-Connection Scenarios
+Incident communication (16.6), rollbacks (15.5), kill switches (14.5), observability (14.1).
+
+### Production Anti-Patterns
+- Stories with no measurable result.
+- On-call rotations with alerts only for HTTP 5xx.
+- Hero culture: one person who knows how to roll back.
+
+### Minimal Working Code
+```python
+STAR = ("situation", "task", "action", "result", "metric", "lesson")
+
+def story_gaps(story: dict) -> list[str]:
+    return [k for k in STAR if not story.get(k)]
+
+print(story_gaps({"situation": "p95 latency doubled", "action": "profiled, cached retrieval", "result": "-40%"}))
+```
+
+```python
+def triage_quality_alert(signals: dict) -> list[str]:
+    steps = []
+    if signals.get("provider_status") != "ok":
+        steps.append("provider degraded: switch to fallback model / enable cache-only mode")
+    if signals.get("prompt_or_config_changed_recently"):
+        steps.append("roll back latest prompt/config change and re-run smoke evals")
+    if signals.get("index_age_hours", 0) > 48:
+        steps.append("retrieval index stale: trigger incremental sync")
+    if signals.get("guardrail_block_rate_delta", 0) > 0.05:
+        steps.append("guardrail block rate spiking: sample blocked traces, check for attack or false positives")
+    return steps or ["no obvious cause: compare traces from a good and a bad request"]
+
+print(triage_quality_alert({"provider_status": "ok", "prompt_or_config_changed_recently": True}))
+```

@@ -300,3 +300,137 @@ h = torch.randn(2, 5, 16)
 mask = torch.tensor([[1, 1, 1, 0, 0], [1, 1, 1, 1, 1]])
 print(mean_pool(h, mask).shape)
 ```
+
+## 5.9 Positional Encodings and Long-Context Techniques
+
+### Conceptual Deep Dive
+Attention is permutation-invariant, so position must be injected. **Sinusoidal** and **learned absolute** embeddings add a position vector to token embeddings. **RoPE** (rotary embeddings) rotates query/key pairs by an angle proportional to position, so the dot product depends on *relative* distance; it dominates modern LLMs. **ALiBi** adds a distance-proportional bias to attention scores and extrapolates to longer lengths. To extend context beyond training length: **position interpolation** (scale positions down), **NTK-aware scaling** and **YaRN** (adjust rotary base/frequencies), continued training on long data, and sparse/sliding-window attention. Long context costs O(n^2) compute and O(n) KV cache memory per sequence. Recall quality degrades in the middle ("lost in the middle") and with distractors, so benchmark with needle tests and realistic tasks, not just perplexity. Edge cases: quality drop past the trained length even when the API accepts longer input, KV cache dominating memory, and prefill latency growing quadratically.
+
+### Cross-Connection Scenarios
+KV cache (5.4), RAG vs long context (9.1), context engineering (6.4), serving memory (13.1).
+
+### Production Anti-Patterns
+- Feeding maximum-length prompts by default.
+- Trusting extended-context models without a recall test on your data.
+- Ignoring prefill latency in long-context SLOs.
+
+### Minimal Working Code
+```python
+import torch
+
+def rope_freqs(dim: int, base: float = 10000.0) -> torch.Tensor:
+    return 1.0 / (base ** (torch.arange(0, dim, 2).float() / dim))
+
+def apply_rope(x: torch.Tensor, positions: torch.Tensor, base: float = 10000.0) -> torch.Tensor:
+    """x: (seq, dim) with even dim. Rotates consecutive pairs by position-dependent angles."""
+    freqs = rope_freqs(x.shape[-1], base)
+    angles = positions[:, None].float() * freqs[None, :]
+    cos, sin = angles.cos(), angles.sin()
+    x1, x2 = x[..., 0::2], x[..., 1::2]
+    out = torch.empty_like(x)
+    out[..., 0::2] = x1 * cos - x2 * sin
+    out[..., 1::2] = x1 * sin + x2 * cos
+    return out
+
+q = torch.randn(6, 8)
+pos = torch.arange(6)
+r = apply_rope(q, pos)
+# relative-position property: dot(rot(q,i), rot(k,j)) depends only on i-j
+print(r.shape, torch.allclose(apply_rope(q, pos).norm(dim=-1), q.norm(dim=-1), atol=1e-5))
+```
+
+```python
+def interpolate_positions(positions: torch.Tensor, trained_len: int, target_len: int) -> torch.Tensor:
+    """Position interpolation: squeeze longer positions into the trained range."""
+    scale = min(1.0, trained_len / target_len)
+    return positions.float() * scale
+
+print(interpolate_positions(torch.tensor([0, 4096, 8191]), 4096, 8192))
+```
+
+## 5.10 Distributed Training, Mixture-of-Experts and Memory Optimisation
+
+### Conceptual Deep Dive
+Parallelism strategies: **data parallel** (replicate model, split batch, all-reduce gradients), **tensor parallel** (split matrix multiplies across GPUs; needs fast interconnect), **pipeline parallel** (split layers into stages; micro-batching hides bubbles), **sequence/context parallel** (split long sequences), **expert parallel** (distribute MoE experts), and **ZeRO/FSDP** (shard optimiser state, gradients, then parameters across data-parallel ranks, cutting memory roughly by the number of GPUs). Memory savers: **mixed precision** (bf16), **gradient checkpointing** (recompute activations; ~30% slower, large memory savings), gradient accumulation, 8-bit optimisers, CPU/NVMe offload, and FlashAttention. **Mixture-of-Experts**: a router sends each token to top-k expert MLPs; total parameters grow while per-token compute stays modest; challenges are load balancing (auxiliary loss), communication cost, and memory for all experts. Edge cases: stragglers slowing synchronous training, non-deterministic reductions, checkpoint resharding between different GPU counts, and router collapse where a few experts get all tokens.
+
+### Cross-Connection Scenarios
+Hardware math (5.6), LoRA/QLoRA (12.3), serving multi-GPU models (13.1, 13.9).
+
+### Production Anti-Patterns
+- Using tensor parallelism across slow PCIe/Ethernet links.
+- Training long runs without periodic checkpoints and resume tests.
+- Ignoring expert load balance metrics.
+
+### Minimal Working Code
+```python
+def training_memory_gb(params_b: float, zero_stage: int, n_gpus: int, bytes_weights=2, adam_state=12):
+    """Rough per-GPU model-state memory: bf16 weights+grads and fp32 master/Adam (12 B/param)."""
+    p = params_b * 1e9
+    weights, grads, opt = p * bytes_weights, p * bytes_weights, p * adam_state
+    if zero_stage >= 1:
+        opt /= n_gpus
+    if zero_stage >= 2:
+        grads /= n_gpus
+    if zero_stage >= 3:
+        weights /= n_gpus
+    return (weights + grads + opt) / 1e9
+
+for s in (0, 1, 2, 3):
+    print(f"ZeRO-{s}: {training_memory_gb(7, s, 8):.1f} GB/GPU (7B, 8 GPUs, excludes activations)")
+```
+
+```python
+import torch
+import torch.nn.functional as F
+
+def top_k_route(x: torch.Tensor, router_w: torch.Tensor, k: int = 2):
+    """x: (tokens, d); router_w: (d, n_experts). Returns expert ids, weights, load-balance loss."""
+    logits = x @ router_w
+    probs = F.softmax(logits, dim=-1)
+    weights, ids = probs.topk(k, dim=-1)
+    weights = weights / weights.sum(-1, keepdim=True)
+    n_exp = probs.shape[-1]
+    load = torch.zeros(n_exp).scatter_add_(0, ids.flatten(), torch.ones(ids.numel())) / ids.numel()
+    importance = probs.mean(0)
+    aux_loss = n_exp * (load * importance).sum()
+    return ids, weights, aux_loss
+
+ids, w, aux = top_k_route(torch.randn(16, 8), torch.randn(8, 4))
+print(ids.shape, float(aux))
+```
+
+## 5.11 Multimodal Models and Diffusion Basics
+
+### Conceptual Deep Dive
+**Vision-language models** typically pair a vision encoder (ViT/SigLIP/CLIP-style) with an LLM through a projector that maps image patch embeddings into the LLM's token space; images become hundreds to thousands of "visual tokens", driving cost. **CLIP-style contrastive training** aligns image and text embeddings in a shared space, enabling zero-shot classification and cross-modal retrieval. **Audio**: ASR (Whisper-style encoder-decoder) and TTS; native speech models skip text. **Diffusion models** generate images by learning to reverse a gradual noising process: sample noise, iteratively denoise guided by a text embedding (classifier-free guidance scales conditioning strength); latent diffusion works in a compressed autoencoder space for efficiency. **Video** models extend this over time. Practical concerns: image resolution vs token cost, OCR quality for dense documents, hallucinated visual details, and licensing/provenance of generated media. Edge cases: tiny text in screenshots, rotated or low-contrast images, and prompts embedded inside images (visual prompt injection).
+
+### Cross-Connection Scenarios
+Multimodal RAG (9.6), multimodal prompting (6.8), voice assistant (17.8), injection via images (14.2).
+
+### Production Anti-Patterns
+- Sending 4K images when a crop or downscale preserves needed detail.
+- Trusting model-read numbers from charts without validation.
+- Ignoring prompt injection hidden in images or PDFs.
+
+### Minimal Working Code
+```python
+def image_token_estimate(width: int, height: int, patch: int = 14, merge: int = 2) -> int:
+    """Rough visual token count for a ViT-style encoder with token merging."""
+    return (width // patch // merge) * (height // patch // merge)
+
+for size in [(448, 448), (1024, 768), (2048, 2048)]:
+    print(size, image_token_estimate(*size))
+```
+
+```python
+import math
+
+def cosine(a, b):
+    return sum(x * y for x, y in zip(a, b)) / (math.sqrt(sum(x * x for x in a)) * math.sqrt(sum(y * y for y in b)))
+
+def zero_shot_label(image_vec, label_vecs: dict[str, list[float]]):
+    """CLIP-style: pick the label whose text embedding is closest to the image embedding."""
+    return max(label_vecs, key=lambda k: cosine(image_vec, label_vecs[k]))
+
+print(zero_shot_label([1.0, 0.1], {"cat": [0.9, 0.2], "invoice": [0.0, 1.0]}))
+```

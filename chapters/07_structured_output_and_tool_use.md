@@ -274,3 +274,140 @@ def execute_with_policy(name, args, fn, approve):
 
 print(execute_with_policy("send_email", {"to": "a@b.c"}, lambda **k: "sent", lambda n, a: False))
 ```
+
+## 7.8 Model Context Protocol (MCP): Servers, Clients and Security
+
+### Conceptual Deep Dive
+**MCP** is an open protocol that standardises how applications give models access to tools, resources and prompts. An **MCP server** exposes: *tools* (callable functions with JSON Schema), *resources* (readable data such as files or records), and *prompts* (reusable templates). An **MCP client** inside a host application (IDE, chat app, agent) discovers a server's capabilities, lists tools, and forwards model-requested calls. Transports: **stdio** (local subprocess) and **streamable HTTP** (remote, with authentication, typically OAuth). Benefits: write an integration once and reuse it across hosts; clear separation between model, host and tool. Risks: servers are third-party code with real privileges. Treat tool descriptions as untrusted prompt content (**tool poisoning**), pin and review servers, scope credentials narrowly, require user confirmation for sensitive tools, and avoid mixing an untrusted server with a server holding private data in one agent session. Edge cases: servers that change tool definitions after approval ("rug pull"), name collisions across servers, very large tool lists degrading tool selection, and long-running tool calls needing progress notifications.
+
+### Cross-Connection Scenarios
+Function calling (7.4), tool safety (7.7), agent protocols (11.10), injection defence (6.5, 14.2).
+
+### Production Anti-Patterns
+- Installing unreviewed community servers with broad filesystem or credential access.
+- Exposing dozens of tools at once instead of curating per task.
+- Passing user OAuth tokens through to every server.
+
+### Minimal Working Code
+```python
+# pip install mcp
+from mcp.server.fastmcp import FastMCP
+
+mcp = FastMCP("orders")
+
+@mcp.tool()
+def get_order_status(order_id: str) -> dict:
+    """Look up the status of an order by id. Read-only."""
+    if not order_id.startswith("ord_"):
+        raise ValueError("order_id must start with 'ord_'")
+    return {"order_id": order_id, "status": "shipped"}
+
+@mcp.resource("policy://refunds")
+def refund_policy() -> str:
+    """Current refund policy text."""
+    return "Refunds are available within 30 days of delivery."
+
+if __name__ == "__main__":
+    mcp.run()          # stdio transport by default
+```
+
+```python
+import hashlib
+import json
+
+def tool_fingerprint(tool_defs: list[dict]) -> str:
+    canonical = json.dumps(sorted(tool_defs, key=lambda t: t["name"]), sort_keys=True)
+    return hashlib.sha256(canonical.encode()).hexdigest()
+
+class ToolPin:
+    """Detect changed tool definitions after a server was approved."""
+    def __init__(self):
+        self.approved: dict[str, str] = {}
+
+    def approve(self, server: str, tool_defs: list[dict]):
+        self.approved[server] = tool_fingerprint(tool_defs)
+
+    def check(self, server: str, tool_defs: list[dict]) -> bool:
+        return self.approved.get(server) == tool_fingerprint(tool_defs)
+
+pin = ToolPin()
+pin.approve("orders", [{"name": "get_order_status", "description": "v1"}])
+print(pin.check("orders", [{"name": "get_order_status", "description": "v1 + exfiltrate secrets"}]))
+```
+
+## 7.9 Streaming Structured Output and Partial JSON
+
+### Conceptual Deep Dive
+Waiting for a complete JSON object hurts perceived latency. **Partial JSON parsing** extracts usable fields as tokens arrive: close open strings/brackets heuristically, or use an incremental parser. UI pattern: render fields progressively (title first, details later) while validating the final object strictly. For tool calls, argument JSON also arrives in fragments across chunks, so accumulate per call index and only execute once the call is complete and valid. Order schema fields so the most useful or cheapest-to-display ones come first, but keep reasoning fields before final answers for quality. Edge cases: escaped characters split across chunks, numbers that look complete but continue ("12" then "5"), duplicate keys, and the model emitting text before the JSON.
+
+### Cross-Connection Scenarios
+Streaming transports (4.2), validation loops (7.2), tool-call parsing (7.4), UI patterns (2.8).
+
+### Production Anti-Patterns
+- Executing a tool after seeing the first closing brace of a nested object.
+- Displaying unvalidated partial values as final facts.
+- Crashing the stream on one malformed fragment instead of buffering.
+
+### Minimal Working Code
+```python
+import json
+
+def close_partial_json(s: str) -> str:
+    """Best-effort completion of a truncated JSON string (for display only)."""
+    stack, in_str, esc = [], False, False
+    for ch in s:
+        if in_str:
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == '"':
+                in_str = False
+        else:
+            if ch == '"':
+                in_str = True
+            elif ch in "{[":
+                stack.append("}" if ch == "{" else "]")
+            elif ch in "}]" and stack:
+                stack.pop()
+    tail = '"' if in_str else ""
+    return s + tail + "".join(reversed(stack))
+
+def best_effort(s: str):
+    s2 = close_partial_json(s).rstrip().rstrip(",")
+    try:
+        return json.loads(s2)
+    except json.JSONDecodeError:
+        return None
+
+buf = ""
+for chunk in ['{"title": "Q3 ', 'report", "items": [{"n": 1}, {"n"', ': 2}], "done": true}']:
+    buf += chunk
+    print(best_effort(buf))
+```
+
+```python
+class ToolCallAssembler:
+    """Collect streamed tool-call fragments keyed by call index."""
+    def __init__(self):
+        self.calls: dict[int, dict] = {}
+
+    def feed(self, delta: dict):
+        c = self.calls.setdefault(delta["index"], {"name": "", "args": ""})
+        c["name"] += delta.get("name", "")
+        c["args"] += delta.get("arguments", "")
+
+    def ready(self):
+        out = []
+        for i, c in self.calls.items():
+            try:
+                out.append((c["name"], json.loads(c["args"])))
+            except json.JSONDecodeError:
+                continue
+        return out
+
+a = ToolCallAssembler()
+for d in [{"index": 0, "name": "get_weather", "arguments": '{"city": "Pa'}, {"index": 0, "arguments": 'ris"}'}]:
+    a.feed(d)
+print(a.ready())
+```

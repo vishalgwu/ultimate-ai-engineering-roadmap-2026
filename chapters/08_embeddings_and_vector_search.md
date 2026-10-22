@@ -323,3 +323,109 @@ def delete_document(store: dict, doc_id: str) -> int:
 s = {"c1": {"doc": "A"}, "c2": {"doc": "A"}, "c3": {"doc": "B"}}
 print(delete_document(s, "A"), list(s))
 ```
+
+## 8.9 Late Interaction (ColBERT) and Learned Sparse Retrieval (SPLADE)
+
+### Conceptual Deep Dive
+Single-vector bi-encoders compress a whole passage into one vector, losing detail. **ColBERT-style late interaction** keeps one vector per token and scores a query-document pair by **MaxSim**: for each query token take its maximum similarity over document tokens, then sum. It captures fine-grained matches and often beats single-vector retrieval out of domain, at the cost of storing many vectors per document (mitigated by residual compression and token pruning; **PLAID**-style engines make it fast). **Learned sparse retrieval (SPLADE)** uses a masked-language-model head to produce a sparse weighted bag of vocabulary terms, including *expansion* terms not present in the text, searchable with an inverted index, combining lexical precision with semantic expansion and good interpretability. Choosing: single dense vector for simplicity and speed, hybrid with BM25 for most production systems, late interaction when top-end quality matters and storage is acceptable, SPLADE when you already operate inverted-index infrastructure. Edge cases: index size blow-up, out-of-vocabulary identifiers still favouring BM25, and multi-vector support varying across vector databases.
+
+### Cross-Connection Scenarios
+Hybrid search (8.5), reranking (9.4), embedding training objectives (5.8), index operations (8.8).
+
+### Production Anti-Patterns
+- Adopting multi-vector retrieval without measuring the storage multiplier.
+- Dropping BM25 entirely for corpora full of part numbers and error codes.
+- Treating learned sparse weights as calibrated probabilities.
+
+### Minimal Working Code
+```python
+import numpy as np
+
+def maxsim(query_vecs: np.ndarray, doc_vecs: np.ndarray) -> float:
+    """query_vecs: (q, d), doc_vecs: (t, d); both L2-normalised."""
+    sim = query_vecs @ doc_vecs.T          # (q, t)
+    return float(sim.max(axis=1).sum())
+
+def normalize(x):
+    return x / np.linalg.norm(x, axis=-1, keepdims=True)
+
+rng = np.random.default_rng(0)
+q = normalize(rng.standard_normal((4, 16)))
+d_relevant = normalize(np.vstack([q + 0.05 * rng.standard_normal(q.shape), rng.standard_normal((6, 16))]))
+d_other = normalize(rng.standard_normal((10, 16)))
+print(maxsim(q, d_relevant) > maxsim(q, d_other))
+```
+
+```python
+def sparse_dot(q: dict[str, float], d: dict[str, float]) -> float:
+    small, big = (q, d) if len(q) < len(d) else (d, q)
+    return sum(w * big.get(t, 0.0) for t, w in small.items())
+
+def invert(docs: dict[str, dict[str, float]]):
+    inv: dict[str, list[tuple[str, float]]] = {}
+    for did, terms in docs.items():
+        for t, w in terms.items():
+            inv.setdefault(t, []).append((did, w))
+    return inv
+
+def search(inv, q: dict[str, float], k=3):
+    scores: dict[str, float] = {}
+    for t, qw in q.items():
+        for did, dw in inv.get(t, []):
+            scores[did] = scores.get(did, 0.0) + qw * dw
+    return sorted(scores.items(), key=lambda x: -x[1])[:k]
+
+docs = {"d1": {"refund": 1.2, "return": 0.7}, "d2": {"shipping": 1.0}}   # 'return' is an expansion term
+print(search(invert(docs), {"return": 1.0, "refund": 0.5}))
+```
+
+## 8.10 Measuring and Tuning ANN Recall, Latency and Cost
+
+### Conceptual Deep Dive
+An ANN index is only as good as its measured **recall against exact search**. Procedure: sample 1,000+ real queries, compute ground-truth top-k with brute force, then sweep index parameters (`efSearch`, `nprobe`, quantisation level) and record recall@k, p50/p95 latency and memory. Plot the recall-latency curve and choose the knee that meets your SLO. Evaluate under **concurrency** (QPS saturation), with **filters** applied (recall often drops sharply for selective filters), and after **updates** (recall can degrade with churn). Cost model: `memory = N x d x bytes x overhead`; pair with replica count for QPS and cross-AZ egress. Quantisation (scalar/binary/PQ) with oversampling and rescoring typically recovers most recall. Edge cases: queries that are out-of-distribution relative to the indexed data, duplicated vectors producing tie-order differences, and benchmark datasets whose distribution differs from yours.
+
+### Cross-Connection Scenarios
+ANN internals (8.3), index operations (8.8), capacity planning (13.7), retrieval metrics (10.2).
+
+### Production Anti-Patterns
+- Setting `efSearch` from a blog post without a recall measurement.
+- Reporting average recall that hides selective-filter queries.
+- Benchmarking at one QPS and assuming linear scaling.
+
+### Minimal Working Code
+```python
+import numpy as np
+
+def recall_at_k(approx_ids: list[list[int]], exact_ids: list[list[int]], k: int) -> float:
+    hit = sum(len(set(a[:k]) & set(e[:k])) for a, e in zip(approx_ids, exact_ids))
+    return hit / (k * len(exact_ids))
+
+def exact_topk(queries: np.ndarray, corpus: np.ndarray, k: int) -> list[list[int]]:
+    return [list(np.argsort(-(corpus @ q))[:k]) for q in queries]
+
+rng = np.random.default_rng(1)
+C = rng.standard_normal((2000, 32)).astype(np.float32)
+Q = rng.standard_normal((20, 32)).astype(np.float32)
+gt = exact_topk(Q, C, 10)
+noisy = [[i for i in row[:8]] + [int(rng.integers(0, 2000)) for _ in range(2)] for row in gt]
+print(round(recall_at_k(noisy, gt, 10), 3))
+```
+
+```python
+import time
+
+def sweep(search_fn, params: list[dict], queries, exact, k=10):
+    """search_fn(query, **params)->ids. Returns recall/latency per setting."""
+    rows = []
+    for p in params:
+        t0, out = time.perf_counter(), []
+        lat = []
+        for q in queries:
+            s = time.perf_counter()
+            out.append(search_fn(q, **p))
+            lat.append(time.perf_counter() - s)
+        lat.sort()
+        rows.append({"params": p, "recall": recall_at_k(out, exact, k),
+                     "p50_ms": 1e3 * lat[len(lat) // 2], "p95_ms": 1e3 * lat[int(.95 * len(lat))]})
+    return rows
+```

@@ -298,3 +298,179 @@ def ci_halfwidth(p: float, n: int, z: float = 1.96) -> float:
 for n in (50, 200, 1000):
     print(n, round(ci_halfwidth(0.8, n), 3))
 ```
+
+## 19.7 Glossary of Core Terms
+
+### Conceptual Deep Dive
+- **Agent**: an LLM in a loop that chooses actions (tool calls) toward a goal.
+- **ANN**: approximate nearest neighbour search (HNSW, IVF, DiskANN).
+- **Attention**: mechanism mixing token information using query-key-value similarity.
+- **BM25**: lexical ranking function using term frequency, document length and rarity.
+- **BPE**: byte-pair encoding tokenisation by iterative merges.
+- **Chain-of-thought**: eliciting intermediate reasoning steps.
+- **Chunking**: splitting documents into retrievable units.
+- **Context window**: maximum tokens the model can process in one request.
+- **Continuous batching**: scheduling at token-iteration level to keep the GPU full.
+- **Cross-encoder**: model scoring a (query, document) pair jointly; used for reranking.
+- **DPO**: preference optimisation without a separate reward model.
+- **Embedding**: vector representation capturing semantic similarity.
+- **Faithfulness / groundedness**: answer claims are supported by provided context.
+- **Fine-tuning**: further training to change model behaviour.
+- **Function calling**: model emits structured requests to run tools.
+- **Guardrail**: check or control around inputs, outputs or actions.
+- **Hallucination**: fluent output unsupported by evidence or facts.
+- **HNSW**: hierarchical navigable small-world graph index.
+- **HyDE**: retrieve using an embedding of a hypothetical answer.
+- **Idempotency**: repeating an operation has the same effect as doing it once.
+- **KV cache**: stored attention keys/values from earlier tokens.
+- **LLM-as-judge**: using a model to grade outputs against a rubric.
+- **LoRA / QLoRA**: low-rank adapter fine-tuning (QLoRA on a 4-bit base).
+- **MCP**: Model Context Protocol for connecting models to tools and data.
+- **MoE**: mixture-of-experts architecture routing tokens to expert MLPs.
+- **nDCG / MRR / recall@k**: ranking and retrieval metrics.
+- **PEFT**: parameter-efficient fine-tuning.
+- **PagedAttention**: block-based KV cache memory management.
+- **Prefill / decode**: prompt processing phase / token-by-token generation phase.
+- **Prompt caching**: reusing computation for a repeated prompt prefix.
+- **Prompt injection**: untrusted text that hijacks model instructions.
+- **Quantisation**: storing weights in fewer bits.
+- **RAG**: retrieval-augmented generation.
+- **Reranker**: second-stage model reordering retrieval candidates.
+- **RLHF / RLVR**: reinforcement learning from human feedback / verifiable rewards.
+- **RRF**: reciprocal rank fusion of ranked lists.
+- **Speculative decoding**: draft-and-verify acceleration.
+- **SFT**: supervised fine-tuning.
+- **Structured output**: model output constrained to a schema.
+- **Temperature / top-p / top-k / min-p**: sampling controls.
+- **TTFT / ITL**: time to first token / inter-token latency.
+- **Vector database**: store optimised for similarity search over embeddings.
+
+### Cross-Connection Scenarios
+Every term is defined in context in its chapter; use this list for quick recall before interviews.
+
+### Production Anti-Patterns
+- Using terms loosely with stakeholders (for example calling every retrieval failure a "hallucination").
+
+### Minimal Working Code
+```python
+GLOSSARY = {
+    "ttft": "time to first token",
+    "itl": "inter-token latency",
+    "rrf": "reciprocal rank fusion",
+    "kv cache": "stored attention keys/values from earlier tokens",
+}
+
+def define(term: str) -> str:
+    return GLOSSARY.get(term.lower(), "not in glossary")
+
+print(define("RRF"))
+```
+
+```python
+def quiz(terms: dict[str, str], seed: int = 0, n: int = 3):
+    import random
+    rng = random.Random(seed)
+    for t in rng.sample(list(terms), min(n, len(terms))):
+        yield t, terms[t]
+
+print(list(quiz(GLOSSARY, n=2)))
+```
+
+## 19.8 Prompt Pattern Library
+
+### Conceptual Deep Dive
+Reusable skeletons (fill the angle-bracket slots, then evaluate on your data):
+1. **Classifier**: "Classify <input> into exactly one of: <labels with definitions>. If none fit, answer `unknown`. Output only the label."
+2. **Extractor**: "Extract <fields> from <text>. Use null when absent. Include the supporting quote for each field. Return JSON matching <schema>."
+3. **Grounded QA**: "Answer using only the sources. Cite as [n]. If the sources do not contain the answer, say you do not know."
+4. **Rewriter**: "Rewrite <text> for <audience> in <tone>. Preserve all numbers, names and meaning. Do not add information."
+5. **Judge**: "Given <criteria>, think step by step, then output JSON {reasoning, score, verdict}. Be strict."
+6. **Planner**: "Break <goal> into at most N steps. For each: action, tool, expected result, success check."
+7. **Critic/reviser**: "Review <draft> against <checklist>. List concrete problems, then produce a corrected version."
+8. **Query rewriter**: "Rewrite the last user message as a standalone search query using the conversation."
+9. **Safe refusal**: "Decline briefly, name no policy text, offer one safe alternative."
+10. **Few-shot formatter**: "<instruction>\nExamples:\n<input>...</input><output>...</output>\nNow: <input>{x}</input><output>"
+Edge cases: patterns interact with model families (some prefer XML tags, others markdown), and examples must reflect real distribution including hard and negative cases.
+
+### Cross-Connection Scenarios
+Prompt engineering (6), structured output (7), grounded QA (9.5), judges (10.3).
+
+### Production Anti-Patterns
+- Copy-pasting patterns without evaluating them on your inputs.
+- Stacking all ten patterns into one giant prompt.
+
+### Minimal Working Code
+```python
+PATTERNS = {
+    "classifier": "Classify the input into exactly one of: {labels}. If none fit, answer unknown. Output only the label.\nInput: {text}",
+    "grounded_qa": "Answer using only the sources below. Cite as [n]. If unsupported, say you do not know.\n{sources}\nQuestion: {question}",
+    "rewriter": "Rewrite for {audience} in a {tone} tone. Preserve all numbers and names. Add nothing.\nText: {text}",
+}
+
+def render(name: str, **kw) -> str:
+    return PATTERNS[name].format(**kw)
+
+print(render("classifier", labels="billing, bug, other", text="I was charged twice"))
+```
+
+```python
+def validate_pattern_vars(name: str, kw: dict) -> list[str]:
+    import string
+    needed = {f for _, f, _, _ in string.Formatter().parse(PATTERNS[name]) if f}
+    return sorted(needed - kw.keys())
+
+print(validate_pattern_vars("rewriter", {"audience": "executives"}))
+```
+
+## 19.9 Rapid-Fire Review Questions
+
+### Conceptual Deep Dive
+Answer aloud in under 30 seconds each; answers are in the referenced sections.
+- Why divide attention scores by the square root of d_k? (5.4)
+- What dominates KV-cache size and how does GQA help? (5.4)
+- When would you choose HNSW over IVF-PQ? (8.3)
+- Why is RRF robust to score-scale differences? (8.5)
+- Name three signs your retrieval, not your generator, is failing. (9.7)
+- How do you reduce position bias in pairwise judging? (10.3)
+- Why should retries use jitter and budgets? (4.3)
+- What makes an operation safe to retry? (4.5)
+- Why is decode memory-bandwidth bound while prefill is compute-bound? (13.1)
+- What is the LoRA update equation and what do r and alpha control? (12.3)
+- Why can DPO skip the reward model? (12.4)
+- Give two defences against indirect prompt injection that do not rely on prompt wording. (6.5, 14.2)
+- How do you size an A/B test and avoid peeking? (10.5)
+- Why prefer workflows to agents when the path is known? (11.1)
+- What belongs in an AI incident postmortem? (16.6)
+- How would you compute cost per successful task? (17.12)
+Edge cases: if you cannot answer, re-read the section and then re-implement its code example from memory.
+
+### Cross-Connection Scenarios
+Use with interview preparation (16.7) and mastery checkpoints (18).
+
+### Production Anti-Patterns
+- Memorising answers without being able to apply them to a system design.
+
+### Minimal Working Code
+```python
+QUESTIONS = [
+    ("Why scale attention by sqrt(d_k)?", "5.4"),
+    ("What makes an operation safe to retry?", "4.5"),
+    ("Why does RRF ignore raw scores?", "8.5"),
+    ("What does the KV cache store?", "5.4"),
+]
+
+def schedule(results: dict[str, bool]) -> list[str]:
+    """Review wrong answers first."""
+    return [q for q, _ in QUESTIONS if not results.get(q, False)] + [q for q, _ in QUESTIONS if results.get(q, False)]
+
+print(schedule({"What does the KV cache store?": True})[0])
+```
+
+```python
+def coverage_by_chapter(asked: list[str]) -> dict[str, int]:
+    from collections import Counter
+    sec = {q: s.split(".")[0] for q, s in QUESTIONS}
+    return dict(Counter(sec[q] for q in asked if q in sec))
+
+print(coverage_by_chapter([q for q, _ in QUESTIONS]))
+```

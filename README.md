@@ -11,6 +11,9 @@ A 19-chapter, code-first guide to building production AI systems. Every concept 
 | `pdfs/` | Generated PDFs, one per chapter |
 | `scripts/build_pdfs.py` | Markdown -> PDF compiler (`markdown` + `xhtml2pdf`) |
 | `scripts/audit.py` | Agent 21 structural audit (sections, code parses, required concepts) |
+| `scripts/merge_extensions.py` | Appends `extensions/*.md` expansion sections to their chapters (idempotent) |
+| `extensions/` | Expansion sections (`NN.md`, `NNb.md`) already merged into the chapters |
+| `CROSSCHECK.md` | What was audited, what was added, and the known remaining gaps |
 | `scripts/required_concepts.json` | Per-chapter concept checklist the audit enforces |
 
 ## Chapters

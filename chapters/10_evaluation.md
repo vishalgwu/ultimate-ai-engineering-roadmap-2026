@@ -308,3 +308,95 @@ def flips(old: dict[str, bool], new: dict[str, bool]) -> dict[str, list[str]]:
 
 print(flips({"a": True, "b": False, "c": True}, {"a": False, "b": True, "c": True}))
 ```
+
+## 10.9 Classic Text Metrics, Code Evals and pass@k
+
+### Conceptual Deep Dive
+Reference-based n-gram metrics still have niches. **BLEU** (n-gram precision with brevity penalty) suits translation; **ROUGE** (recall-oriented overlap) suits summarisation; **chrF** works at character level; **BERTScore** compares contextual embeddings and tolerates paraphrase. All correlate weakly with human judgement for open-ended generation; use them as cheap smoke tests, not as primary metrics. **Exact match** and **F1 over tokens** fit extractive QA. **Code evals** execute generated code against unit tests; **pass@k** estimates the probability that at least one of k samples passes: with n samples and c correct, `pass@k = 1 - C(n-c, k) / C(n, k)` (unbiased estimator). Sandboxed execution is mandatory. Edge cases: duplicate or leaked benchmark problems, tests that are too weak (false passes), nondeterministic tests, and timeouts.
+
+### Cross-Connection Scenarios
+LLM-as-judge (10.3), sandboxing (11.6), agent code evaluation (11.6), CI gates (15.2).
+
+### Production Anti-Patterns
+- Using BLEU/ROUGE to claim a chatbot improved.
+- Running generated code outside a sandbox.
+- Reporting pass@1 from a single sample at temperature 0 as if it were pass@k.
+
+### Minimal Working Code
+```python
+import math
+from collections import Counter
+
+def pass_at_k(n: int, c: int, k: int) -> float:
+    if n - c < k:
+        return 1.0
+    return 1.0 - math.comb(n - c, k) / math.comb(n, k)
+
+def token_f1(pred: str, gold: str) -> float:
+    p, g = pred.lower().split(), gold.lower().split()
+    common = sum((Counter(p) & Counter(g)).values())
+    if common == 0:
+        return 0.0
+    prec, rec = common / len(p), common / len(g)
+    return 2 * prec * rec / (prec + rec)
+
+print(round(pass_at_k(20, 5, 1), 3), round(pass_at_k(20, 5, 5), 3), round(token_f1("the refund window", "refund window is 30 days"), 3))
+```
+
+```python
+import math
+from collections import Counter
+
+def rouge_n(pred: str, ref: str, n: int = 1) -> dict:
+    def grams(s):
+        t = s.lower().split()
+        return Counter(tuple(t[i:i + n]) for i in range(len(t) - n + 1))
+    p, r = grams(pred), grams(ref)
+    overlap = sum((p & r).values())
+    rec = overlap / max(sum(r.values()), 1)
+    prec = overlap / max(sum(p.values()), 1)
+    f = 0.0 if rec + prec == 0 else 2 * rec * prec / (rec + prec)
+    return {"recall": rec, "precision": prec, "f1": f}
+
+print(rouge_n("the cat sat on the mat", "the cat is on the mat"))
+```
+
+## 10.10 Human Annotation Operations and Inter-Annotator Agreement
+
+### Conceptual Deep Dive
+Reliable labels need process. Write an **annotation guideline** with definitions, positive and negative examples, edge-case rulings and a decision tree; run a **pilot** with 2–3 annotators on 50 items, measure agreement, resolve disagreements, and revise the guideline before scaling. Metrics: **percent agreement** (inflated by chance), **Cohen's kappa** (two annotators), **Fleiss' kappa** or **Krippendorff's alpha** (many annotators, missing data, ordinal scales). Quality controls: gold-standard items interleaved, adjudication of disagreements by an expert, annotator calibration sessions, and tracking per-annotator drift. Tooling: Label Studio, Argilla, Prodigy, spreadsheets for small sets. Active learning prioritises uncertain or high-impact examples. Edge cases: subjective tasks where disagreement is signal (keep multiple labels), annotator fatigue, label leakage from model suggestions (anchoring), and privacy of data shown to external annotators.
+
+### Cross-Connection Scenarios
+Judge calibration (10.3), dataset curation (12.2), preference data (12.4), PII handling (14.3).
+
+### Production Anti-Patterns
+- Scaling annotation before guidelines stabilise.
+- Reporting percent agreement without chance correction.
+- Discarding disagreements instead of analysing them.
+
+### Minimal Working Code
+```python
+from collections import Counter
+
+def fleiss_kappa(ratings: list[list[int]], n_categories: int) -> float:
+    """ratings[i] = counts of each category for item i (same number of raters per item)."""
+    N, n = len(ratings), sum(ratings[0])
+    p_j = [sum(r[j] for r in ratings) / (N * n) for j in range(n_categories)]
+    P_i = [(sum(c * c for c in r) - n) / (n * (n - 1)) for r in ratings]
+    P_bar, P_e = sum(P_i) / N, sum(p * p for p in p_j)
+    return (P_bar - P_e) / (1 - P_e) if P_e != 1 else 1.0
+
+# 4 items, 3 raters, 2 categories
+print(round(fleiss_kappa([[3, 0], [2, 1], [0, 3], [1, 2]], 2), 3))
+```
+
+```python
+def majority_with_flags(labels: list[str], min_agree: float = 0.67):
+    c = Counter(labels)
+    top, cnt = c.most_common(1)[0]
+    agree = cnt / len(labels)
+    return {"label": top if agree >= min_agree else None, "agreement": agree,
+            "needs_adjudication": agree < min_agree}
+
+print(majority_with_flags(["pos", "pos", "neg"]), majority_with_flags(["pos", "neg", "neu"]))
+```

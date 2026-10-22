@@ -237,3 +237,79 @@ def best_track(skills: set[str]) -> str:
 
 print(best_track({"lora", "dpo", "evals"}))
 ```
+
+## 18.8 Annotated Reading List: Foundational Papers and Sources
+
+### Conceptual Deep Dive
+Read primary sources in this order, spending 1–2 hours each: skim the abstract and figures, read the method, then the limitations. (Titles are well-known; verify details on arXiv.) **Architecture**: *Attention Is All You Need* (Vaswani et al., 2017); *BERT* (Devlin et al., 2018); *RoFormer / RoPE* (Su et al., 2021); *FlashAttention* (Dao et al., 2022); *GQA* (Ainslie et al., 2023); *Mamba* (Gu and Dao, 2023). **Scaling and training**: *Scaling Laws for Neural Language Models* (Kaplan et al., 2020); *Training Compute-Optimal Large Language Models* ("Chinchilla", Hoffmann et al., 2022); *Training language models to follow instructions with human feedback* ("InstructGPT", Ouyang et al., 2022); *Constitutional AI* (Bai et al., 2022). **Prompting and reasoning**: *Chain-of-Thought Prompting* (Wei et al., 2022); *Self-Consistency* (Wang et al., 2022); *ReAct* (Yao et al., 2022); *Tree of Thoughts* (Yao et al., 2023); *Toolformer* (Schick et al., 2023); *Lost in the Middle* (Liu et al., 2023). **Retrieval**: *Retrieval-Augmented Generation for Knowledge-Intensive NLP Tasks* (Lewis et al., 2020); *ColBERT* (Khattab and Zaharia, 2020); *HyDE* (Gao et al., 2022); *Self-RAG* (Asai et al., 2023); *RAPTOR* (Sarthi et al., 2024); *From Local to Global: A GraphRAG Approach* (Edge et al., 2024); *Matryoshka Representation Learning* (Kusupati et al., 2022). **Efficient adaptation and serving**: *LoRA* (Hu et al., 2021); *QLoRA* (Dettmers et al., 2023); *GPTQ* (Frantar et al., 2022); *AWQ* (Lin et al., 2023); *Direct Preference Optimization* (Rafailov et al., 2023); *Efficient Memory Management for LLM Serving with PagedAttention* (Kwon et al., 2023); *Fast Inference via Speculative Decoding* (Leviathan et al., 2022); *DeepSeekMath* (introduces GRPO; Shao et al., 2024). **Agents and evaluation**: *Generative Agents* (Park et al., 2023); *Reflexion* (Shinn et al., 2023); *MemGPT* (Packer et al., 2023); *Judging LLM-as-a-Judge with MT-Bench* (Zheng et al., 2023); *RAGAS* (Es et al., 2023); *DSPy* (Khattab et al., 2023). Edge cases: papers are snapshots; check later errata, follow-ups and whether results replicate.
+
+### Cross-Connection Scenarios
+Each paper maps to a chapter section (attention 5.4, RoPE 5.9, RAG 9, LoRA 12.3, DPO 12.4, PagedAttention 13.1).
+
+### Production Anti-Patterns
+- Implementing from a blog summary without reading the paper's limitations.
+- Reading only new papers, never the foundations.
+- Taking benchmark claims at face value without replication.
+
+### Minimal Working Code
+```python
+READING = [
+    ("Attention Is All You Need", 2017, "5.4"), ("LoRA", 2021, "12.3"), ("Chinchilla", 2022, "5.5"),
+    ("Chain-of-Thought Prompting", 2022, "6.2"), ("ReAct", 2022, "6.3"), ("RAG (Lewis et al.)", 2020, "9.1"),
+    ("DPO", 2023, "12.4"), ("PagedAttention", 2023, "13.1"), ("FlashAttention", 2022, "5.4"),
+]
+
+def next_paper(done: set[str], chapter_focus: str):
+    return [t for t, y, sec in READING if sec.startswith(chapter_focus) and t not in done]
+
+print(next_paper({"LoRA"}, "12"))
+```
+
+```python
+def paper_notes_template(title: str) -> str:
+    return (f"# {title}\n- Problem:\n- Key idea (one sentence):\n- Method:\n- Evidence:\n"
+            f"- Limitations / what would break it:\n- How I would test it on my data:\n")
+
+print(paper_notes_template("LoRA").splitlines()[0])
+```
+
+## 18.9 Lab Rubrics, Grading Criteria and Solution Hints
+
+### Conceptual Deep Dive
+Self-assess each lab with a rubric rather than "it runs". **Resilient client (Phase 1)**: passes if retries use jitter and honour `Retry-After`, the breaker opens and half-opens correctly, concurrency is bounded, timeouts are set, and a fault-injection test demonstrates all four. **RAG app (Phase 2)**: passes if there is a golden set of 100+ questions with labelled sources, recall@k and faithfulness reported with intervals, at least two ablations (chunking, hybrid, rerank), abstention when evidence is missing, and a documented failure analysis. **Agent and red-team (Phase 3)**: passes if budgets, loop detection and approvals exist, trajectory metrics (pass^k, cost per solved task) are reported, 30+ attack prompts have measured ASR before and after mitigations, and logs are redacted. **Fine-tune and serve (Phase 4)**: passes if the tuned model beats a strong prompt baseline on a frozen test set, general-capability regression is checked, quantised variants are re-evaluated, a load test with open-loop arrivals reports p95 TTFT, and a CI gate plus rollback are demonstrated. **Hints**: when stuck, write the eval first; inspect actual chunks and rendered prompts; reduce to one failing example; change one variable at a time; log everything with a request id. Edge cases: labs that pass on your laptop but not in a clean container; keep a Dockerfile.
+
+### Cross-Connection Scenarios
+Mastery checkpoints (18.1–18.5), readiness checklist (17.6), testing (15.8).
+
+### Production Anti-Patterns
+- Declaring a lab done because the demo worked once.
+- No ablations, so improvements cannot be attributed.
+- Skipping the failure analysis write-up.
+
+### Minimal Working Code
+```python
+RUBRICS = {
+    "resilient_client": ["jittered_backoff", "retry_after", "circuit_breaker", "bounded_concurrency", "fault_injection_test"],
+    "rag_app": ["golden_set_100", "recall_and_faithfulness_ci", "two_ablations", "abstention", "failure_analysis"],
+    "agent_redteam": ["budgets", "loop_detection", "approvals", "pass_hat_k", "asr_before_after"],
+    "finetune_serve": ["beats_prompt_baseline", "general_regression_check", "quant_reeval", "open_loop_load_test", "ci_gate_rollback"],
+}
+
+def grade(lab: str, achieved: set[str]) -> dict:
+    items = RUBRICS[lab]
+    missing = [i for i in items if i not in achieved]
+    return {"lab": lab, "score": f"{len(items) - len(missing)}/{len(items)}", "missing": missing}
+
+print(grade("rag_app", {"golden_set_100", "abstention"}))
+```
+
+```python
+def debug_checklist(symptom: str) -> list[str]:
+    base = ["write/identify a failing example", "log the rendered request and raw response",
+            "change one variable at a time", "re-run the eval, not just the example"]
+    extra = {"retrieval": ["inspect the actual chunks", "check recall@50 vs recall@k"],
+             "latency": ["split time by stage", "check queueing vs generation"]}
+    return base + extra.get(symptom, [])
+
+print(debug_checklist("retrieval"))
+```

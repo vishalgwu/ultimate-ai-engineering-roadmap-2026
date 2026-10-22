@@ -11,7 +11,7 @@ ROOT = Path(__file__).resolve().parent.parent
 
 def main() -> None:
     for ext in sorted((ROOT / "extensions").glob("*.md")):
-        nn = ext.stem
+        nn = ext.stem[:2]           # 07.md, 07b.md, 07c.md ... all extend chapter 07
         targets = list((ROOT / "chapters").glob(f"{nn}_*.md"))
         if len(targets) != 1:
             print(f"SKIP {ext.name}: no unique chapter")

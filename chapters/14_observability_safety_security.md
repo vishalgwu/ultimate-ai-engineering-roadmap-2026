@@ -276,3 +276,138 @@ def erase_user(user_id: str, stores: dict) -> dict:
 
 print(erase_user("u1", {"logs": lambda u: 4, "vectors": lambda u: 12, "memory": lambda u: 1}))
 ```
+
+## 14.8 Mapping the OWASP LLM Top 10 to Concrete Controls
+
+### Conceptual Deep Dive
+Turn risk lists into a control matrix with owners and tests. Representative mapping (names follow the OWASP Top 10 for LLM Applications; verify against the current edition): **Prompt injection** → untrusted-content labelling, least-privilege tools, approvals, injection classifiers, red-team regression suite. **Sensitive information disclosure** → PII redaction, output scanners, ACL-filtered retrieval, no secrets in prompts. **Supply chain** → pinned/hashed dependencies, signed images, safetensors only, vetted MCP servers. **Data and model poisoning** → provenance of training/RAG data, ingestion review, anomaly detection on new documents. **Improper output handling** → escape/validate outputs before rendering, SQL, shell. **Excessive agency** → minimal tool set, scoped credentials, rate/amount caps, human approval. **System prompt leakage** → assume leakage; keep secrets out. **Vector and embedding weaknesses** → tenant isolation, ACLs inside the query, embedding access control. **Misinformation** → citations, abstention, verification, domain review. **Unbounded consumption** → rate limits, token caps, quotas, budgets, timeouts. For each risk record: control, owner, test, monitoring signal. Edge cases: controls that exist on paper but have no test, and risks that change as you add tools or modalities.
+
+### Cross-Connection Scenarios
+Threat modelling (14.2), red-teaming (14.6), guardrails (14.4), agent security (11.6).
+
+### Production Anti-Patterns
+- A risk register that no one reviews after launch.
+- Controls with no automated test.
+- Treating the Top 10 as a one-time checklist.
+
+### Minimal Working Code
+```python
+RISK_CONTROLS = {
+    "prompt_injection": {"controls": ["untrusted_labelling", "least_privilege", "approvals"], "test": "redteam_injection"},
+    "sensitive_disclosure": {"controls": ["pii_redaction", "acl_retrieval"], "test": "leakage_probe"},
+    "excessive_agency": {"controls": ["minimal_tools", "amount_caps"], "test": "tool_abuse_suite"},
+    "unbounded_consumption": {"controls": ["rate_limits", "token_caps", "budgets"], "test": "load_abuse"},
+}
+
+def coverage(implemented: set[str], tests_passing: set[str]) -> dict:
+    report = {}
+    for risk, spec in RISK_CONTROLS.items():
+        missing = [c for c in spec["controls"] if c not in implemented]
+        report[risk] = {"missing_controls": missing, "test_passing": spec["test"] in tests_passing}
+    return report
+
+print(coverage({"pii_redaction", "rate_limits", "token_caps", "budgets"}, {"load_abuse"}))
+```
+
+```python
+def release_blockers(report: dict) -> list[str]:
+    return [r for r, v in report.items() if v["missing_controls"] or not v["test_passing"]]
+
+print(release_blockers(coverage({"pii_redaction", "acl_retrieval"}, {"leakage_probe"})))
+```
+
+## 14.9 Audit Logging, Evidence and Explainability
+
+### Conceptual Deep Dive
+Regulated and enterprise customers need to answer "who did what, when, with which model and data?". An **audit record** per AI interaction should capture: request id, user/tenant (hashed where needed), timestamp, model and version, prompt template version, retrieval document ids (not necessarily content), tool calls with arguments and results (redacted), guardrail decisions, output hash, and outcome/feedback. Store immutably (append-only, write-once storage), with retention and access controls separate from application logs, and tamper evidence (hash chaining). **Explainability** for LLM systems is mostly *traceability*: show sources, retrieval scores, rules triggered and approvals, not claims about neural internals. Provide user-facing "why this answer" views and exportable reports for compliance. Edge cases: balancing audit completeness against privacy (log references instead of raw sensitive text), clock sync, and log volume costs.
+
+### Cross-Connection Scenarios
+Tracing (14.1), PII (14.3), governance and retention (14.7), approvals (7.7).
+
+### Production Anti-Patterns
+- Audit logs writable by the same service they audit.
+- Storing raw prompts with PII indefinitely for "debugging".
+- No link between a user complaint and the exact trace that produced the answer.
+
+### Minimal Working Code
+```python
+import hashlib
+import json
+import time
+
+class AuditLog:
+    """Append-only, hash-chained log: altering any entry breaks every later hash."""
+    def __init__(self):
+        self.entries, self.prev = [], "0" * 64
+
+    def append(self, event: dict) -> dict:
+        body = {"ts": time.time(), "prev": self.prev, **event}
+        digest = hashlib.sha256(json.dumps(body, sort_keys=True).encode()).hexdigest()
+        entry = {**body, "hash": digest}
+        self.entries.append(entry)
+        self.prev = digest
+        return entry
+
+    def verify(self) -> bool:
+        prev = "0" * 64
+        for e in self.entries:
+            body = {k: v for k, v in e.items() if k != "hash"}
+            if body["prev"] != prev or hashlib.sha256(json.dumps(body, sort_keys=True).encode()).hexdigest() != e["hash"]:
+                return False
+            prev = e["hash"]
+        return True
+
+log = AuditLog()
+log.append({"request_id": "r1", "model": "m-1", "prompt_version": "a1b2", "docs": ["d4", "d9"], "action": "answered"})
+log.append({"request_id": "r2", "tool": "refund", "approved_by": "agent_17"})
+print(log.verify())
+log.entries[0]["model"] = "tampered"
+print(log.verify())
+```
+
+```python
+def audit_record(request_id: str, user_id: str, output: str, **meta) -> dict:
+    return {"request_id": request_id,
+            "user": hashlib.sha256(user_id.encode()).hexdigest()[:16],
+            "output_hash": hashlib.sha256(output.encode()).hexdigest(),
+            **meta}
+
+print(audit_record("r9", "alice@example.com", "Your refund was approved.", model="m-1", docs=["d2"]))
+```
+
+## 14.10 Copyright, Provenance, Watermarking and Regulation
+
+### Conceptual Deep Dive
+Legal and policy landscapes shift quickly; treat this as an engineering checklist and consult counsel. **Training and RAG data**: track licences and sources; honour robots/opt-outs where required; avoid ingesting content you cannot lawfully store or quote; keep deletion capability. **Outputs**: models can reproduce memorised text or code; mitigate with duplicate-detection filters, licence scanners for generated code, and quoting limits. **Provenance**: attach metadata to generated media (C2PA content credentials) and keep internal records of what was AI-generated. **Watermarking** (statistical token-level or image/audio watermarks) helps detection but is imperfect and removable. **Disclosure**: tell users when they interact with AI and when content is AI-generated where law or policy requires. **Regulation** to know at a high level: the EU AI Act (risk tiers, transparency duties, general-purpose model obligations), GDPR/UK GDPR (lawful basis, DPIAs, data-subject rights), CCPA/CPRA, sectoral rules (HIPAA, financial regulators), and standards (NIST AI RMF, ISO/IEC 42001). Edge cases: cross-border data flows, models trained on data that later receives a deletion request, and jurisdiction-specific restrictions on automated decisions.
+
+### Cross-Connection Scenarios
+Responsible AI (1.8), governance (14.7), synthetic data licensing (12.10), model cards (16.6).
+
+### Production Anti-Patterns
+- Shipping generated code with no licence scan in a commercial product.
+- No record of data sources for a fine-tuned model.
+- Marketing claims that exceed what the system can guarantee.
+
+### Minimal Working Code
+```python
+ALLOWED_LICENSES = {"mit", "apache-2.0", "bsd-3-clause", "cc-by-4.0", "cc0-1.0"}
+
+def audit_sources(sources: list[dict]) -> dict:
+    blocked = [s["name"] for s in sources if s.get("license", "").lower() not in ALLOWED_LICENSES]
+    return {"ok": not blocked, "blocked": blocked}
+
+print(audit_sources([{"name": "wiki-dump", "license": "CC-BY-4.0"}, {"name": "scraped-forum", "license": ""}]))
+```
+
+```python
+def verbatim_overlap(output: str, corpus_ngrams: set[tuple], n: int = 8) -> float:
+    toks = output.lower().split()
+    grams = [tuple(toks[i:i + n]) for i in range(len(toks) - n + 1)]
+    if not grams:
+        return 0.0
+    return sum(g in corpus_ngrams for g in grams) / len(grams)
+
+ref = "to be or not to be that is the question whether tis nobler".split()
+corpus = {tuple(ref[i:i + 8]) for i in range(len(ref) - 7)}
+print(verbatim_overlap("to be or not to be that is the question", corpus))
+```

@@ -341,3 +341,108 @@ def build_batch_requests(prompts, model="MODEL_ID"):
 
 print(len(list(chunked(build_batch_requests(["a", "b", "c"]), 2))))
 ```
+
+## 4.9 API Design for LLM Services: Compatibility, Versioning and Pagination
+
+### Conceptual Deep Dive
+Many tools speak the **OpenAI-compatible** chat-completions shape (`/v1/chat/completions`, `/v1/embeddings`, SSE chunks with `delta`), so exposing that interface lets clients, gateways and SDKs work unchanged. Design guidance: version in the path (`/v1`) and treat additions as non-breaking, removals as breaking; publish an **OpenAPI** schema; use consistent error envelopes (`type`, `message`, `code`, `request_id`); return usage (input/output tokens) in every response; accept an idempotency key header; and paginate list endpoints with opaque cursors (stable under inserts) rather than offsets. Support **streaming and non-streaming** from the same handler. Include rate-limit headers (`X-RateLimit-Remaining`, `Retry-After`). Edge cases: SSE chunk formats differing by provider, partial tool-call deltas arriving across chunks, clients that ignore unknown fields, and long-lived connections behind load balancers with idle timeouts.
+
+### Cross-Connection Scenarios
+Streaming (4.2), idempotency (4.5), gateways (13.6), tool-call streaming (7.4, 7.9).
+
+### Production Anti-Patterns
+- Breaking response shapes without a version bump.
+- Offset pagination on a table receiving constant writes.
+- Error bodies of different shapes per endpoint.
+
+### Minimal Working Code
+```python
+import base64
+import json
+
+def encode_cursor(last_id: int, last_ts: float) -> str:
+    return base64.urlsafe_b64encode(json.dumps([last_id, last_ts]).encode()).decode()
+
+def decode_cursor(c: str) -> tuple[int, float]:
+    a, b = json.loads(base64.urlsafe_b64decode(c.encode()))
+    return a, b
+
+def page(items: list[dict], cursor: str | None, limit: int = 2):
+    start = 0
+    if cursor:
+        last_id, _ = decode_cursor(cursor)
+        start = next((i + 1 for i, it in enumerate(items) if it["id"] == last_id), 0)
+    chunk = items[start:start + limit]
+    nxt = encode_cursor(chunk[-1]["id"], chunk[-1]["ts"]) if len(chunk) == limit else None
+    return {"data": chunk, "next_cursor": nxt}
+
+rows = [{"id": i, "ts": float(i)} for i in range(5)]
+p1 = page(rows, None)
+print([r["id"] for r in p1["data"]], [r["id"] for r in page(rows, p1["next_cursor"])["data"]])
+```
+
+```python
+import json
+import time
+
+def sse_chunk(request_id: str, model: str, text: str | None, finish: str | None = None) -> str:
+    body = {"id": request_id, "object": "chat.completion.chunk", "created": int(time.time()),
+            "model": model, "choices": [{"index": 0, "delta": {"content": text} if text else {},
+                                         "finish_reason": finish}]}
+    return f"data: {json.dumps(body)}\n\n"
+
+print(sse_chunk("req-1", "my-model", "Hel"), sse_chunk("req-1", "my-model", None, "stop"))
+```
+
+## 4.10 Distributed Rate Limiting and Quotas with Redis
+
+### Conceptual Deep Dive
+In-process limiters fail when you run multiple replicas. Use a shared store (Redis) with **atomic** operations. Approaches: fixed window counters (`INCR` + `EXPIRE`; allows 2x bursts at boundaries), **sliding window log** (sorted set of timestamps, precise but memory-heavy), and **token bucket** implemented in a Lua script so read-modify-write is atomic. For LLM traffic limit both **requests and tokens**; since output tokens are unknown up front, reserve an estimate (e.g. `max_tokens`) and reconcile after completion. Add per-tenant and per-key tiers, plus a global limit protecting your upstream provider quota. Edge cases: clock skew across nodes (use Redis server time), Redis failover (decide fail-open vs fail-closed per route), hot keys, and retry storms from clients that ignore `Retry-After`.
+
+### Cross-Connection Scenarios
+Token bucket basics (4.4), multi-tenancy (4.7), gateway budgets (13.6), spend control (15.7).
+
+### Production Anti-Patterns
+- Non-atomic check-then-increment sequences.
+- Limiting requests only, ignoring token consumption.
+- Failing closed on all routes when Redis blips, causing a total outage.
+
+### Minimal Working Code
+```python
+# pip install redis
+import redis
+
+LUA_TOKEN_BUCKET = """
+local key, rate, cap, cost = KEYS[1], tonumber(ARGV[1]), tonumber(ARGV[2]), tonumber(ARGV[3])
+local t = redis.call('TIME'); local now = tonumber(t[1]) + tonumber(t[2]) / 1e6
+local d = redis.call('HMGET', key, 'tokens', 'ts')
+local tokens, ts = tonumber(d[1]) or cap, tonumber(d[2]) or now
+tokens = math.min(cap, tokens + (now - ts) * rate)
+local allowed = 0
+if tokens >= cost then tokens = tokens - cost; allowed = 1 end
+redis.call('HMSET', key, 'tokens', tokens, 'ts', now)
+redis.call('EXPIRE', key, math.ceil(cap / rate) * 2)
+return {allowed, tostring(tokens)}
+"""
+
+class RedisLimiter:
+    def __init__(self, r: redis.Redis, rate: float, capacity: float):
+        self.r, self.rate, self.cap = r, rate, capacity
+        self.script = r.register_script(LUA_TOKEN_BUCKET)
+
+    def allow(self, key: str, cost: float = 1.0) -> bool:
+        allowed, _ = self.script(keys=[f"rl:{key}"], args=[self.rate, self.cap, cost])
+        return bool(allowed)
+```
+
+```python
+def reserve_and_reconcile(limiter, tenant: str, max_tokens: int, run):
+    """Reserve worst-case tokens, then refund unused ones after the call finishes."""
+    if not limiter.allow(f"tpm:{tenant}", cost=max_tokens):
+        return {"status": 429, "headers": {"Retry-After": "2"}}
+    result = run()
+    unused = max_tokens - result["usage"]["output_tokens"]
+    if unused > 0:
+        limiter.allow(f"tpm:{tenant}", cost=-unused)      # negative cost refunds tokens
+    return {"status": 200, "result": result}
+```

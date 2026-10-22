@@ -311,3 +311,142 @@ def cached(fn):
         return memo[k]
     return wrapper
 ```
+
+## 17.10 Project H — Text-to-SQL Analytics Assistant
+
+### Conceptual Deep Dive
+Goal: let business users ask questions in plain language and get correct, auditable numbers. Architecture: a **semantic layer** (curated views, metric definitions, synonyms, join paths) so the model targets business concepts rather than raw tables; **schema retrieval** (embed table/column descriptions, include only relevant ones plus sample values); generation with the schema and few-shot examples of correct queries; **static validation** (parse SQL, allow-list tables/columns, forbid DDL/DML, enforce LIMIT and time bounds, cost estimate via `EXPLAIN`); **read-only credentials** with row-level security tied to the user; execution with timeouts; result summarisation with the SQL shown for transparency; and a feedback loop that stores corrected queries as new few-shot examples and eval cases. Evaluate **execution accuracy** (result sets match gold) rather than string match. Edge cases: ambiguous metrics ("revenue" gross or net), fiscal calendars, time zones, join fan-out inflating sums, large result sets, and users asking questions the data cannot answer (abstain).
+
+### Cross-Connection Scenarios
+Text-to-SQL (9.6), tool safety (7.7), eval of structured results (10.9), access control (4.7).
+
+### Production Anti-Patterns
+- Pointing the model at the raw warehouse with broad credentials.
+- Showing a number with no query or definition.
+- Evaluating by SQL string similarity.
+
+### Minimal Working Code
+```python
+import re
+
+FORBIDDEN = re.compile(r"\b(insert|update|delete|drop|alter|create|grant|truncate|merge|copy|attach)\b", re.I)
+
+def validate_sql(sql: str, allowed_tables: set[str], max_limit: int = 1000) -> str:
+    s = sql.strip().rstrip(";")
+    if ";" in s or FORBIDDEN.search(s) or not re.match(r"(?is)^(with|select)\b", s):
+        raise ValueError("only a single read-only SELECT is allowed")
+    tables = {t.lower() for t in re.findall(r"(?i)\b(?:from|join)\s+([a-z_][\w.]*)", s)}
+    ctes = {c.lower() for c in re.findall(r"(?i)\b([a-z_]\w*)\s+as\s*\(", s)}
+    illegal = tables - ctes - allowed_tables
+    if illegal:
+        raise ValueError(f"tables not allowed: {sorted(illegal)}")
+    m = re.search(r"(?i)\blimit\s+(\d+)", s)
+    if not m:
+        s += f" LIMIT {max_limit}"
+    elif int(m.group(1)) > max_limit:
+        raise ValueError("limit too large")
+    return s
+
+print(validate_sql("select region, sum(net_revenue) from sales_v group by region", {"sales_v"}))
+```
+
+```python
+def execution_accuracy(cases, generate_sql, run_sql) -> float:
+    ok = 0
+    for c in cases:
+        try:
+            pred = sorted(map(tuple, run_sql(generate_sql(c["question"]))))
+        except Exception:
+            continue
+        ok += pred == sorted(map(tuple, c["gold_rows"]))
+    return ok / len(cases)
+
+print(execution_accuracy([{"question": "q", "gold_rows": [(1,)]}], lambda q: "select 1", lambda s: [(1,)]))
+```
+
+## 17.11 Project I — AI Code Review and Developer Productivity Assistant
+
+### Conceptual Deep Dive
+Goal: automated review comments on pull requests that developers actually value. Pipeline: fetch the diff and changed-file context; run **deterministic tools first** (linters, type checkers, tests, secret scanners, dependency audits) and let the LLM focus on what tools miss (logic errors, missing edge cases, unclear naming, risky patterns, missing tests); retrieve repository conventions (style guide, similar code); generate comments with severity and a confidence score; **filter aggressively** (drop low-confidence and nitpick comments, dedupe against existing threads); post as a single review; learn from reactions (resolved/dismissed). Metrics: acceptance rate of comments, bugs caught before merge, reviewer time saved, false-positive rate. Safety: never run untrusted PR code with secrets, sandbox test execution, treat PR text as untrusted input (injection via code comments). Edge cases: huge diffs (chunk by file, prioritise risky files), generated files, force-pushes invalidating comments, and monorepo ownership rules.
+
+### Cross-Connection Scenarios
+Coding agents (11.9), CI workflows (15.1), injection (6.5), cost governance (15.7).
+
+### Production Anti-Patterns
+- Posting dozens of low-value comments that train developers to ignore the bot.
+- Running PR code with repository secrets exposed.
+- No measurement of whether comments were acted on.
+
+### Minimal Working Code
+```python
+def parse_diff_files(diff: str) -> dict[str, list[str]]:
+    files, cur = {}, None
+    for line in diff.splitlines():
+        if line.startswith("+++ b/"):
+            cur = line[6:]
+            files[cur] = []
+        elif cur and line.startswith("+") and not line.startswith("+++"):
+            files[cur].append(line[1:])
+    return files
+
+def prioritise(files: dict[str, list[str]], risky=("auth", "payment", "migration", "security")) -> list[str]:
+    def score(path):
+        return (any(r in path.lower() for r in risky), len(files[path]))
+    return sorted(files, key=score, reverse=True)
+
+diff = "+++ b/app/auth/login.py\n+x = 1\n+++ b/README.md\n+docs\n"
+print(prioritise(parse_diff_files(diff)))
+```
+
+```python
+def filter_comments(comments: list[dict], min_conf: float = 0.7, max_comments: int = 8, seen: set | None = None):
+    seen = seen or set()
+    keep = [c for c in comments
+            if c["confidence"] >= min_conf and c["severity"] in {"bug", "security", "risk"}
+            and (c["file"], c["line"], c["kind"]) not in seen]
+    keep.sort(key=lambda c: (c["severity"] != "security", -c["confidence"]))
+    return keep[:max_comments]
+
+print(filter_comments([{"confidence": 0.9, "severity": "bug", "file": "a.py", "line": 3, "kind": "npe"},
+                       {"confidence": 0.5, "severity": "nit", "file": "a.py", "line": 9, "kind": "style"}]))
+```
+
+## 17.12 Production Readiness Review Template and Cost Model
+
+### Conceptual Deep Dive
+Before launch run a structured **readiness review** with sign-off from engineering, security, product and operations. Sections: *purpose and users*; *success metrics and ship criteria*; *architecture and data flows* (diagram incl. third parties); *evaluation evidence* (golden set size, slices, intervals, judge calibration); *safety* (red-team results, guardrails, false-positive rates); *privacy and compliance* (data classes, retention, DPIA if needed); *reliability* (SLOs, load test results, failure modes, fallbacks); *operations* (dashboards, alerts, runbooks, on-call owner, kill switch, rollback tested); *cost model* (per-request cost, monthly forecast at expected/10x traffic, budget alarms); *rollout plan* (shadow, canary, success/abort criteria); *post-launch plan* (feedback loop, review at 2 and 6 weeks). The **cost model** multiplies traffic by tokens by price, then adds retrieval, embedding, storage, GPU, observability and human review costs, and expresses everything per successful task. Edge cases: costs that scale with context growth over time, retries inflating spend, and seasonal traffic.
+
+### Cross-Connection Scenarios
+Capstone checklist (17.6), cost (2.4, 13.5, 15.7), SLOs (13.7), governance (14.7).
+
+### Production Anti-Patterns
+- Launch reviews held after the date is already announced.
+- A cost model covering only LLM tokens.
+- No abort criteria in the rollout plan.
+
+### Minimal Working Code
+```python
+def monthly_cost_model(reqs_per_month: int, tin: int, tout: int, p_in: float, p_out: float,
+                       retrieval_per_req: float = 0.0005, other_fixed: float = 2000.0,
+                       retry_factor: float = 1.05, success_rate: float = 0.9) -> dict:
+    llm = reqs_per_month * retry_factor * (tin / 1e6 * p_in + tout / 1e6 * p_out)
+    retrieval = reqs_per_month * retrieval_per_req
+    total = llm + retrieval + other_fixed
+    return {"llm": round(llm), "retrieval": round(retrieval), "fixed": other_fixed, "total": round(total),
+            "per_request": total / reqs_per_month, "per_successful_task": total / (reqs_per_month * success_rate)}
+
+base = monthly_cost_model(1_000_000, 2500, 350, 0.5, 2.0)
+tenx = monthly_cost_model(10_000_000, 2500, 350, 0.5, 2.0)
+print(base["total"], tenx["total"], round(base["per_successful_task"], 4))
+```
+
+```python
+REVIEW_SECTIONS = ["purpose", "metrics", "architecture", "evals", "safety", "privacy",
+                   "reliability", "operations", "cost", "rollout", "post_launch"]
+
+def readiness_status(review: dict) -> dict:
+    missing = [s for s in REVIEW_SECTIONS if not review.get(s, {}).get("approved_by")]
+    return {"ready": not missing, "missing_signoffs": missing}
+
+print(readiness_status({"purpose": {"approved_by": "pm"}, "cost": {"approved_by": "finance"}}))
+```

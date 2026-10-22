@@ -244,3 +244,95 @@ def deprecation_warnings(used: list[str], today: date, warn_days: int = 120):
 
 print(deprecation_warnings(["old-model"], date(2026, 10, 22)))
 ```
+
+## 2.7 The Model Landscape: Closed, Open, Reasoning, Small and Multimodal
+
+### Conceptual Deep Dive
+Model categories matter more than names. **Frontier closed models** lead on hard reasoning, coding and long-horizon agents; they cost the most and give least control. **Open-weight models** (Llama, Qwen, Mistral, Gemma, DeepSeek families) let you self-host, fine-tune and inspect, with licences ranging from permissive to restricted. **Reasoning models** spend hidden "thinking" tokens before answering, improving maths, code and planning at higher latency and cost; they usually need less explicit chain-of-thought prompting and often reject unnecessary instructions about format of reasoning. **Small language models (SLMs, 1–8B)** run on laptops or cheap GPUs and excel when fine-tuned for narrow tasks. **Mixture-of-Experts** models give large capacity at lower active-parameter cost but need large memory. **Multimodal models** accept images, audio or video. **Embedding and reranker models** are separate specialised families. Selection method: shortlist 3 models per tier, run your eval set, plot quality vs cost vs latency, and pick the Pareto-optimal option with a fallback. Edge cases: aliases that silently move, context windows advertised vs effective, tokenizers producing different costs for the same text, and regional availability.
+
+### Cross-Connection Scenarios
+Routing and cascades (13.6), fine-tuning small models (12, 17.5), eval-based selection (10.6), token economics (2.4).
+
+### Production Anti-Patterns
+- Choosing the newest model because it tops a public leaderboard.
+- Using a reasoning model for simple classification (cost and latency waste).
+- Treating advertised context length as usable recall length.
+
+### Minimal Working Code
+```python
+def pareto_front(candidates: list[dict]) -> list[dict]:
+    """Keep models not dominated on (quality up, cost down, latency down)."""
+    front = []
+    for a in candidates:
+        dominated = any(
+            b is not a and b["quality"] >= a["quality"] and b["cost"] <= a["cost"]
+            and b["latency"] <= a["latency"]
+            and (b["quality"] > a["quality"] or b["cost"] < a["cost"] or b["latency"] < a["latency"])
+            for b in candidates)
+        if not dominated:
+            front.append(a)
+    return front
+
+models = [
+    {"name": "frontier", "quality": 0.92, "cost": 10.0, "latency": 3.0},
+    {"name": "mid", "quality": 0.88, "cost": 2.0, "latency": 1.5},
+    {"name": "small-ft", "quality": 0.87, "cost": 0.2, "latency": 0.4},
+    {"name": "old-mid", "quality": 0.80, "cost": 2.5, "latency": 2.0},
+]
+print([m["name"] for m in pareto_front(models)])
+```
+
+```python
+def effective_context_probe(llm, filler_tokens: int, depth: float, needle="The access code is 7391."):
+    """Needle-in-haystack: bury a fact at a relative depth and test recall."""
+    words = ["lorem"] * filler_tokens
+    pos = int(depth * len(words))
+    words.insert(pos, needle)
+    answer = llm(" ".join(words) + "\n\nWhat is the access code?")
+    return "7391" in answer
+
+# sweep depth in (0.0, 0.25, 0.5, 0.75, 1.0) and length in several sizes; plot the recall grid
+```
+
+## 2.8 AI Product Patterns and Human-AI Interaction Design
+
+### Conceptual Deep Dive
+Product shape determines engineering requirements. Patterns: **chat assistant** (open dialogue; needs memory, guardrails, streaming), **copilot/inline suggestion** (low latency, accept/reject telemetry), **form-filling/extraction** (structured output, review UI), **search and answer** (RAG with citations), **workflow automation** (deterministic graph with LLM steps), **autonomous agent** (long-running, approvals, budgets), **batch processing** (offline, cost-optimised). Interaction design principles: set expectations early, show sources and confidence, make correction cheap (edit, regenerate, thumbs), support undo, ask clarifying questions when ambiguity is high instead of guessing, degrade gracefully (partial results, "I'm not sure"), and preserve user control for consequential actions. Instrument acceptance rate, edit distance, time saved, and abandonment. Edge cases: latency tolerance differs by pattern (inline completion under 300 ms, deep research minutes), trust calibration (over-trust vs under-trust), and accessibility.
+
+### Cross-Connection Scenarios
+Metrics translation (16.1), feedback-driven eval datasets (10.1, 2.3), streaming UX (4.2), approvals (7.7, 11.8).
+
+### Production Anti-Patterns
+- Using a chat box for every problem when a form or button would be faster and safer.
+- No feedback controls, so no learning signal.
+- Hiding sources, preventing users from verifying claims.
+
+### Minimal Working Code
+```python
+def pick_pattern(req: dict) -> str:
+    if req.get("offline") and req.get("volume") == "high":
+        return "batch processing"
+    if req.get("latency_ms", 1000) < 400:
+        return "inline copilot (small/fast model, aggressive caching)"
+    if req.get("structured_target"):
+        return "form-filling/extraction with review UI"
+    if req.get("needs_knowledge"):
+        return "search-and-answer (RAG with citations)"
+    if req.get("steps_known"):
+        return "workflow automation"
+    return "chat assistant or agent with approvals"
+
+print(pick_pattern({"latency_ms": 250}))
+```
+
+```python
+from collections import Counter
+
+def feedback_summary(events: list[dict]) -> dict:
+    c = Counter(e["type"] for e in events)
+    shown = c["shown"] or 1
+    return {"accept_rate": c["accept"] / shown, "regen_rate": c["regenerate"] / shown,
+            "thumbs_down_rate": c["thumbs_down"] / shown}
+
+print(feedback_summary([{"type": "shown"}] * 10 + [{"type": "accept"}] * 6 + [{"type": "regenerate"}] * 2))
+```
