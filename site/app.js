@@ -198,6 +198,11 @@
   function closeModal() { $("#modal").classList.add("hidden"); if ($("#reader").classList.contains("hidden")) document.body.style.overflow = ""; }
 
   /* ---------- reader ---------- */
+  // Programmatic jumps (TOC, deep links, skip-to-code) should be instant, not a 10,000px smooth scroll.
+  function jumpTo(el, block) {
+    const sc = $("#reader-article"); const prev = sc.style.scrollBehavior;
+    sc.style.scrollBehavior = "auto"; el.scrollIntoView({ block: block || "start" }); sc.style.scrollBehavior = prev;
+  }
   const mdCache = {};
   let cur = null; // {num}
   async function loadMd(ch) { if (mdCache[ch.num]) return mdCache[ch.num]; const r = await fetch(ch.md); if (!r.ok) throw new Error("HTTP " + r.status); return (mdCache[ch.num] = await r.text()); }
@@ -241,9 +246,9 @@
     const nx = D.chapters[i + 1];
     if (nx) { const u = document.createElement("div"); u.className = "upnext"; u.dataset.ch = nx.num; u.innerHTML = `<div class="up-p">${poster(nx)}</div><div class="up-b"><small>UP NEXT</small><strong>${esc(nx.title)}</strong><span style="color:var(--muted);font-size:.9rem">${esc(nx.tagline)}</span></div>`; wrap.appendChild(u); }
     art.innerHTML = ""; art.appendChild(wrap);
-    const target = secNum ? $("#s-" + secNum, wrap) : null;
+    const target = secNum ? $(`[id="s-${secNum}"]`, wrap) : null;   // attribute selector: ids contain dots (9.9)
     const saved = progress[num];
-    if (target) target.scrollIntoView(); else if (saved && saved.top > 200 && saved.pct < 97) { art.scrollTop = saved.top; toast("Resuming where you left off"); } else art.scrollTop = 0;
+    if (target) jumpTo(target); else if (saved && saved.top > 200 && saved.pct < 97) { art.scrollTop = saved.top; toast("Resuming where you left off"); } else art.scrollTop = 0;
     onReaderScroll();
     $("#skip-code").classList.remove("hidden"); clearTimeout(openReader.skipT); openReader.skipT = setTimeout(() => $("#skip-code").classList.add("hidden"), 12000);
     art.focus({ preventScroll: true });
@@ -321,7 +326,7 @@
     const card = t.closest(".card, .upnext");
     if (card && card.dataset.ch) { if (card.classList.contains("upnext")) return openReader(+card.dataset.ch); return openModal(+card.dataset.ch); }
     const toc = t.closest(".toc-i");
-    if (toc) { const art = $("#reader-article"); if (toc.dataset.top) art.scrollTo({ top: 0 }); else { const h = $("#s-" + toc.dataset.s, art); if (h) h.scrollIntoView(); } $("#reader-toc").classList.remove("open"); return; }
+    if (toc) { const art = $("#reader-article"); if (toc.dataset.top) art.scrollTo({ top: 0 }); else { const h = $(`[id="s-${toc.dataset.s}"]`, art); if (h) jumpTo(h); } $("#reader-toc").classList.remove("open"); return; }
     const prof = t.closest(".profile"); if (prof) return pick(prof.dataset.p);
     const jump = t.closest("[data-jump]");
     if (jump) { e.preventDefault(); const r = $("#row-" + jump.dataset.jump); if (r) r.scrollIntoView({ behavior: "smooth", block: "center" }); $$(".nav-links a").forEach((a) => a.classList.toggle("active", a === jump)); }
@@ -340,7 +345,7 @@
   $("#reader-back").onclick = () => closeReader(); $("#reader-prev").onclick = () => stepChapter(-1); $("#reader-next").onclick = () => stepChapter(1);
   $("#reader-toc-btn").onclick = () => $("#reader-toc").classList.toggle("open");
   $("#reader-article").addEventListener("scroll", onReaderScroll, { passive: true });
-  $("#skip-code").onclick = () => { const p = $("#reader-article pre"); if (p) p.scrollIntoView({ block: "center" }); $("#skip-code").classList.add("hidden"); };
+  $("#skip-code").onclick = () => { const p = $("#reader-article pre"); if (p) jumpTo(p, "center"); $("#skip-code").classList.add("hidden"); };
   addEventListener("scroll", () => $("#nav").classList.toggle("solid", scrollY > 30), { passive: true });
   function route() {
     if (suppress) { suppress = false; return; }
