@@ -286,3 +286,8 @@ ul{list-style:none}
   *,*::before,*::after{animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important;scroll-behavior:auto!important}
   .splash{display:none}
 }
+
+/* images (SVG diagrams) and Mermaid in the reader */
+.md img{max-width:100%;height:auto;display:block;margin:1.2rem auto;border-radius:8px;background:#0b0b0b}
+.md .mermaid{background:#0b0b0b;border:1px solid #2a2a2a;border-radius:8px;padding:1rem;margin:1.2rem 0;overflow:auto;text-align:center}
+.md .mermaid svg{max-width:100%;height:auto}

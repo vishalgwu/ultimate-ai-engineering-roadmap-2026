@@ -96,7 +96,7 @@
     const p = progress[ch.num]; const pct = p ? Math.min(100, Math.round(p.pct)) : 0;
     const isNew = (C.newChapters || []).includes(ch.num) && !opts.noTag;
     return `<div class="card" tabindex="0" data-ch="${ch.num}" role="button" aria-label="${esc(ch.title)}">
-      <div class="poster">${poster(ch)}<span class="tag">${isNew ? '<span class="tag new" style="position:static">${esc(C.newLabel)}</span>' : esc(C.posterTag)}</span>
+      <div class="poster">${poster(ch)}<span class="tag">${isNew ? `<span class="tag new" style="position:static">${esc(C.newLabel)}</span>` : esc(C.posterTag)}</span>
       ${pct > 1 ? `<div class="prog"><span style="width:${pct}%"></span></div>` : ""}</div>${cardInfo(ch)}</div>`;
   }
   function topCard(ch, rank) {
@@ -212,6 +212,29 @@
     const sc = $("#reader-article"); const prev = sc.style.scrollBehavior;
     sc.style.scrollBehavior = "auto"; el.scrollIntoView({ block: block || "start" }); sc.style.scrollBehavior = prev;
   }
+  let mermaidP = null;
+  function loadMermaid() {
+    if (window.mermaid) return Promise.resolve(window.mermaid);
+    if (!mermaidP) mermaidP = new Promise((res, rej) => {
+      const sc = document.createElement("script");
+      sc.src = "https://cdn.jsdelivr.net/npm/mermaid@10.9.1/dist/mermaid.min.js"; sc.onload = () => res(window.mermaid); sc.onerror = rej;
+      document.head.appendChild(sc);
+    });
+    return mermaidP;
+  }
+  async function renderMermaid(wrap) {
+    const blocks = $$("pre code.language-mermaid", wrap);
+    if (!blocks.length) return;
+    try {
+      const mm = await loadMermaid();
+      mm.initialize({ startOnLoad: false, theme: "dark", securityLevel: "strict", themeVariables: { primaryColor: "#2a0709", primaryBorderColor: "#E50914", lineColor: "#b3b3b3", primaryTextColor: "#fff" } });
+      for (const c of blocks) {
+        const pre = c.closest("pre"); const d = document.createElement("div"); d.className = "mermaid"; d.textContent = c.textContent;
+        pre.replaceWith(d);
+        try { await mm.run({ nodes: [d] }); } catch (e) { d.replaceWith(pre); }   // keep the source visible if a diagram fails
+      }
+    } catch (e) { /* offline or blocked: leave diagrams as code */ }
+  }
   const mdCache = {};
   let cur = null; // {num}
   async function loadMd(ch) { if (mdCache[ch.num]) return mdCache[ch.num]; const r = await fetch(ch.md); if (!r.ok) throw new Error("HTTP " + r.status); return (mdCache[ch.num] = await r.text()); }
@@ -255,6 +278,7 @@
     const nx = D.chapters[i + 1];
     if (nx) { const u = document.createElement("div"); u.className = "upnext"; u.dataset.ch = nx.num; u.innerHTML = `<div class="up-p">${poster(nx)}</div><div class="up-b"><small>UP NEXT</small><strong>${esc(nx.title)}</strong><span style="color:var(--muted);font-size:.9rem">${esc(nx.tagline)}</span></div>`; wrap.appendChild(u); }
     art.innerHTML = ""; art.appendChild(wrap);
+    renderMermaid(wrap);
     const target = secNum ? $(`[id="s-${secNum}"]`, wrap) : null;   // attribute selector: ids contain dots (9.9)
     const saved = progress[num];
     if (target) jumpTo(target); else if (saved && saved.top > 200 && saved.pct < 97) { art.scrollTop = saved.top; toast("Resuming where you left off"); } else art.scrollTop = 0;
