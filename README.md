@@ -176,7 +176,7 @@ def rrf(rank_lists: list[list[str]], k: int = 60, top: int = 10) -> list[str]:
 Chapters form a graph, not a line. Evaluation (10) should start as soon as you have a prompt worth measuring.
 
 ```mermaid
-flowchart LR
+flowchart TD
   A[01 About] --> B[02 Fundamentals]
   B --> C[03 Python]
   B --> D[04 APIs & Reliability]
